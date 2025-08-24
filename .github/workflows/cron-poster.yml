@@ -11,15 +11,18 @@ jobs:
     permissions:
       contents: write
     env:
-      TZ: Europe/Kaliningrad   # <-- добавь эту строку
+      TZ: Europe/Kaliningrad   # интерпретируем время из CSV по Калининграду
     steps:
       - uses: actions/checkout@v4
+
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install csv-parser
-        run: npm i csv-parser
+
+      - name: Install deps
+        run: npm ci || npm i
+
       - name: Run cron poster
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -27,6 +30,7 @@ jobs:
           OWNER_ID: ${{ secrets.OWNER_ID }}
           WINDOW_MINUTES: "12"
         run: node scripts/cron_poster.js
+
       - name: Commit sent.json
         run: |
           if git diff --quiet --exit-code -- sent.json; then
@@ -38,3 +42,4 @@ jobs:
             git commit -m "chore: update sent.json (auto poster)"
             git push
           fi
+
