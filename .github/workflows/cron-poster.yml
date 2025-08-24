@@ -1,26 +1,18 @@
-name: Telegram Auto Poster
-
-on:
-  schedule:
-    - cron: "*/5 * * * *"   # каждые 5 минут (UTC)
-  workflow_dispatch:
-
 jobs:
   run:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TZ: Europe/Kaliningrad   # <-- добавь эту строку
     steps:
       - uses: actions/checkout@v4
-
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
       - name: Install csv-parser
         run: npm i csv-parser
-
       - name: Run cron poster
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -28,7 +20,6 @@ jobs:
           OWNER_ID: ${{ secrets.OWNER_ID }}
           WINDOW_MINUTES: "12"
         run: node scripts/cron_poster.js
-
       - name: Commit sent.json
         run: |
           if git diff --quiet --exit-code -- sent.json; then
@@ -39,6 +30,4 @@ jobs:
             git add sent.json
             git commit -m "chore: update sent.json (auto poster)"
             git push
-          fi
-
           fi
