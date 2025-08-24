@@ -21,7 +21,7 @@ jobs:
           node-version: "20"
 
       - name: Install deps
-        run: npm ci || npm i
+        run: npm install
 
       - name: Run cron poster
         env:
