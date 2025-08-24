@@ -26,7 +26,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
-          WINDOW_MINUTES: "12"   # окно догонялки (мин)
+          WINDOW_MINUTES: "12"
         run: node scripts/cron_poster.js
 
       - name: Commit sent.json
@@ -39,4 +39,6 @@ jobs:
             git add sent.json
             git commit -m "chore: update sent.json (auto poster)"
             git push
+          fi
+
           fi
