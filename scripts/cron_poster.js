@@ -1,4 +1,4 @@
-// scripts/cron_poster.js — GitHub Actions автопостер с autodetect CSV, кастомными кнопками и логами
+// scripts/cron_poster.js — GitHub Actions автопостер с autodetect CSV, кастомными кнопками и точными алертами
 import fs from "fs";
 import csv from "csv-parser";
 
@@ -6,7 +6,7 @@ import csv from "csv-parser";
 const BOT_TOKEN   = process.env.BOT_TOKEN;
 const CHANNEL_ID  = process.env.CHANNEL_ID;
 const OWNER_ID    = process.env.OWNER_ID || "";
-const WINDOW_MIN  = Number(process.env.WINDOW_MINUTES || 12);
+const WINDOW_MIN  = Number(process.env.WINDOW_MINUTES || 12); // окно «догонялки» (мин)
 const CSV_PATH    = "avtopost.csv";
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
@@ -18,14 +18,10 @@ if (!BOT_TOKEN || !CHANNEL_ID) {
 const SENT_FILE = "sent.json";
 let sent = new Set();
 try {
-  if (fs.existsSync(SENT_FILE)) {
-    sent = new Set(JSON.parse(fs.readFileSync(SENT_FILE, "utf8")));
-  }
+  if (fs.existsSync(SENT_FILE)) sent = new Set(JSON.parse(fs.readFileSync(SENT_FILE, "utf8")));
 } catch (_) {}
 
-function saveSent() {
-  fs.writeFileSync(SENT_FILE, JSON.stringify([...sent], null, 2));
-}
+function saveSent() { fs.writeFileSync(SENT_FILE, JSON.stringify([...sent], null, 2)); }
 function keyOf({date,time,channel_id,text,photo_url,video_url}) {
   const payload = `${date}|${time}|${channel_id}|${text||""}|${photo_url||""}|${video_url||""}`;
   return Buffer.from(payload).toString("base64").slice(0,32);
@@ -41,10 +37,7 @@ function extractDriveId(url = "") {
     if (m1) return m1[1];
     const id2 = u.searchParams.get("id");
     if (id2) return id2;
-    if (u.pathname.startsWith("/uc")) {
-      const id3 = u.searchParams.get("id");
-      if (id3) return id3;
-    }
+    if (u.pathname.startsWith("/uc")) return u.searchParams.get("id");
     return null;
   } catch { return null; }
 }
@@ -53,7 +46,7 @@ function convertDriveUrl(url=""){
   return id ? `https://drive.google.com/uc?export=download&id=${id}` : url;
 }
 
-// Нормализация media
+// ==== Нормализация media ====
 function normRow(row){
   if (!row.photo_url && row.photo) row.photo_url = row.photo;
   if (!row.video_url && row.video) row.video_url = row.video;
@@ -122,13 +115,9 @@ function buildKeyboardCustomOrDefault(customButtons, botUsername) {
 }
 
 async function sendPost({channel, text, photo_url, video_url, keyboardExtra}) {
-  if (video_url) {
-    return tg("sendVideo", { chat_id: channel, video: video_url, caption: text, ...keyboardExtra });
-  } else if (photo_url) {
-    return tg("sendPhoto", { chat_id: channel, photo: photo_url, caption: text, ...keyboardExtra });
-  } else {
-    return tg("sendMessage", { chat_id: channel, text, ...keyboardExtra });
-  }
+  if (video_url)   return tg("sendVideo", { chat_id: channel, video: video_url, caption: text, ...keyboardExtra });
+  if (photo_url)   return tg("sendPhoto", { chat_id: channel, photo: photo_url, caption: text, ...keyboardExtra });
+  return tg("sendMessage", { chat_id: channel, text, ...keyboardExtra });
 }
 
 // ==== autodetect CSV ====
@@ -140,9 +129,7 @@ function detectSeparator(filePath) {
     const commas = (first.match(/,/g) || []).length;
     const semis  = (first.match(/;/g) || []).length;
     return semis > commas ? ";" : ",";
-  } catch {
-    return ",";
-  }
+  } catch { return ","; }
 }
 
 // ==== MAIN ====
@@ -157,20 +144,29 @@ fs.createReadStream(CSV_PATH)
   .on("data", (r) => rows.push(normRow(r)))
   .on("error", async (e) => {
     hadError = true;
-    if (OWNER_ID) {
-      try { await tgSend(OWNER_ID, `❌ CSV read error: ${e?.message || e}`); } catch {}
-    }
+    if (OWNER_ID) { try { await tgSend(OWNER_ID, `❌ CSV read error: ${e?.message || e}`); } catch {} }
     process.exit(1);
   })
   .on("end", async () => {
     if (hadError) return;
+
+    console.log(`CSV rows read: ${rows.length}`);
     if (rows.length === 0) {
-      if (OWNER_ID) await tgSend(OWNER_ID, "⚠️ CSV пуст — нет строк для обработки.");
+      if (OWNER_ID) { try { await tgSend(OWNER_ID, "⚠️ CSV пуст — нет строк для обработки."); } catch {} }
       return;
     }
 
-    const now = new Date();
+    const now = new Date();                       // TZ задаётся в workflow (Europe/Kaliningrad)
     const windowMs = WINDOW_MIN * 60 * 1000;
+    const YN = now.getFullYear(), MN = now.getMonth(), DN = now.getDate();
+
+    // строки на СЕГОДНЯ
+    const rowsToday = rows.filter(r => {
+      const [Y,M,D] = String(r.date||"").split("-").map(Number);
+      return !Number.isNaN(Y) && !Number.isNaN(M) && !Number.isNaN(D) &&
+             Y === YN && (M-1) === MN && D === DN;
+    });
+
     let done = 0, skipped = 0;
 
     await ensureBotUsername();
@@ -184,19 +180,23 @@ fs.createReadStream(CSV_PATH)
       const video_url = (r.video_url||"").trim();
 
       if (!date || !time || !text) { skipped++; continue; }
+
       const [Y,M,D] = date.split("-").map(Number);
       const [h,m]   = time.split(":").map(Number);
       const when    = new Date(Y,(M||1)-1,D,h||0,m||0);
       if (isNaN(when)) { skipped++; continue; }
 
+      // публикуем, если запись попала в окно [now - WINDOW_MIN; now]
       if (when <= now && (now - when) <= windowMs) {
         const k = keyOf({date,time,channel_id:channel,text,photo_url,video_url});
         if (sent.has(k)) continue;
+
         try {
           const customButtons = collectCustomButtons(r);
           const keyboardExtra = buildKeyboardCustomOrDefault(customButtons, BOT_USERNAME);
           await sendPost({ channel, text, photo_url, video_url, keyboardExtra });
           sent.add(k); done++;
+
           if (OWNER_ID) {
             await tgSend(OWNER_ID,
 `✅ Опубликовано: ${date} ${time}
@@ -219,13 +219,24 @@ fs.createReadStream(CSV_PATH)
     }
 
     saveSent();
+
+    // ⚠️ Алерт «не найдено» только если были ДОЛЖНЫ быть (сегодняшние и уже прошедшие), но не попали в окно
     if (done === 0) {
-      if (OWNER_ID) {
-        await tgSend(OWNER_ID,
+      const dueToday = rowsToday.filter(r => {
+        const [Y,M,D] = String(r.date||"").split("-").map(Number);
+        const [h,m]   = String(r.time||"").split(":").map(Number);
+        const when    = new Date(Y,(M||1)-1,D,h||0,m||0);
+        return when <= now; // уже настало время публикации
+      });
+      if (dueToday.length > 0) {
+        if (OWNER_ID) {
+          await tgSend(OWNER_ID,
 `⚠️ GitHub Cron: постов в окне ${WINDOW_MIN} мин не найдено.
-(всего строк: ${rows.length}, пропущено: ${skipped})`
-        ).catch(()=>{});
+(сегодня строк: ${rowsToday.length}, из них уже «должны быть»: ${dueToday.length}, фактически отправлено: 0)`
+          ).catch(()=>{});
+        }
       }
     }
+
     console.log(`Done: ${done}, skipped: ${skipped}, window=${WINDOW_MIN}m`);
   });
