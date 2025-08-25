@@ -1,14 +1,13 @@
-// scripts/cron_poster.js — GitHub Actions автопостер с URL-кнопками из CSV
-// Требуется Node 20+, package.json с { "type": "module", "dependencies": { "csv-parser": "^3" } }
-
+// scripts/cron_poster.js — GitHub Actions автопостер с autodetect CSV, кастомными кнопками и логами
 import fs from "fs";
 import csv from "csv-parser";
 
 // ==== ENV ====
 const BOT_TOKEN   = process.env.BOT_TOKEN;
-const CHANNEL_ID  = process.env.CHANNEL_ID; // @username или -100...
+const CHANNEL_ID  = process.env.CHANNEL_ID;
 const OWNER_ID    = process.env.OWNER_ID || "";
-const WINDOW_MIN  = Number(process.env.WINDOW_MINUTES || 12); // окно «догонялки», мин
+const WINDOW_MIN  = Number(process.env.WINDOW_MINUTES || 12);
+const CSV_PATH    = "avtopost.csv";
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
   console.error("Missing BOT_TOKEN or CHANNEL_ID env");
@@ -54,7 +53,7 @@ function convertDriveUrl(url=""){
   return id ? `https://drive.google.com/uc?export=download&id=${id}` : url;
 }
 
-// Нормализация колонок media + алиасы photo/video
+// Нормализация media
 function normRow(row){
   if (!row.photo_url && row.photo) row.photo_url = row.photo;
   if (!row.video_url && row.video) row.video_url = row.video;
@@ -77,18 +76,14 @@ async function tg(method, body) {
 async function tgSend(chat_id, text, extra={}) { return tg("sendMessage", {chat_id, text, ...extra}); }
 async function tgGetMe() { return tg("getMe", {}); }
 
-// ==== Кнопки: кастом из CSV или дефолтные ====
+// ==== Кнопки ====
 function collectCustomButtons(row) {
-  // Ожидаемые пары в CSV: btn1_text, btn1_url, ... btn8_text, btn8_url
   const buttons = [];
   for (let i = 1; i <= 8; i++) {
     const t = (row[`btn${i}_text`] || "").trim();
     const u = (row[`btn${i}_url`]  || "").trim();
     if (!t || !u) continue;
-    try {
-      const url = new URL(u); // валидация URL
-      buttons.push({ text: t, url: url.toString() });
-    } catch { /* пропускаем невалидные URL */ }
+    try { buttons.push({ text: t, url: new URL(u).toString() }); } catch {}
   }
   return buttons;
 }
@@ -105,7 +100,6 @@ async function ensureBotUsername(){
     BOT_USERNAME = me.username;
   }
 }
-
 function buildKeyboardCustomOrDefault(customButtons, botUsername) {
   if (customButtons.length > 0) {
     return { reply_markup: { inline_keyboard: chunkButtons(customButtons, 2) } };
@@ -137,13 +131,45 @@ async function sendPost({channel, text, photo_url, video_url, keyboardExtra}) {
   }
 }
 
-// ==== Чтение CSV и публикация ====
+// ==== autodetect CSV ====
+function detectSeparator(filePath) {
+  try {
+    const buf = fs.readFileSync(filePath, "utf8");
+    const first = buf.split(/\r?\n/).find(l => l.trim());
+    if (!first) return ",";
+    const commas = (first.match(/,/g) || []).length;
+    const semis  = (first.match(/;/g) || []).length;
+    return semis > commas ? ";" : ",";
+  } catch {
+    return ",";
+  }
+}
+
+// ==== MAIN ====
+const SEP = detectSeparator(CSV_PATH);
+console.log(`CSV: ${CSV_PATH}, separator="${SEP}"`);
+
 const rows = [];
-fs.createReadStream("avtopost.csv")
-  .pipe(csv())
+let hadError = false;
+
+fs.createReadStream(CSV_PATH)
+  .pipe(csv({ separator: SEP }))
   .on("data", (r) => rows.push(normRow(r)))
+  .on("error", async (e) => {
+    hadError = true;
+    if (OWNER_ID) {
+      try { await tgSend(OWNER_ID, `❌ CSV read error: ${e?.message || e}`); } catch {}
+    }
+    process.exit(1);
+  })
   .on("end", async () => {
-    const now = new Date();             // TZ берём из workflow (env TZ=Europe/Kaliningrad)
+    if (hadError) return;
+    if (rows.length === 0) {
+      if (OWNER_ID) await tgSend(OWNER_ID, "⚠️ CSV пуст — нет строк для обработки.");
+      return;
+    }
+
+    const now = new Date();
     const windowMs = WINDOW_MIN * 60 * 1000;
     let done = 0, skipped = 0;
 
@@ -158,52 +184,48 @@ fs.createReadStream("avtopost.csv")
       const video_url = (r.video_url||"").trim();
 
       if (!date || !time || !text) { skipped++; continue; }
-
       const [Y,M,D] = date.split("-").map(Number);
       const [h,m]   = time.split(":").map(Number);
       const when    = new Date(Y,(M||1)-1,D,h||0,m||0);
       if (isNaN(when)) { skipped++; continue; }
 
-      // публикуем, если запись попала в окно [now - WINDOW_MIN; now]
       if (when <= now && (now - when) <= windowMs) {
         const k = keyOf({date,time,channel_id:channel,text,photo_url,video_url});
         if (sent.has(k)) continue;
-
         try {
           const customButtons = collectCustomButtons(r);
           const keyboardExtra = buildKeyboardCustomOrDefault(customButtons, BOT_USERNAME);
-
           await sendPost({ channel, text, photo_url, video_url, keyboardExtra });
           sent.add(k); done++;
-
           if (OWNER_ID) {
             await tgSend(OWNER_ID,
-`✅ GitHub Cron: опубликовано
-${date} ${time} → ${channel}
-Тип: ${video_url ? "video" : (photo_url ? "photo" : "text")}
-Кнопки: ${customButtons.length ? customButtons.length : "дефолтные"}
+`✅ Опубликовано: ${date} ${time}
+→ ${channel}
+Тип: ${video_url?"video":photo_url?"photo":"text"}
+Кнопки: ${customButtons.length||"дефолтные"}
 Текст: ${short(text)}`
             ).catch(()=>{});
           }
         } catch(e) {
-          const errText = e?.message || String(e);
           if (OWNER_ID) {
             await tgSend(OWNER_ID,
-`❌ GitHub Cron: сбой публикации
-${date} ${time} → ${channel}
-Фото: ${photo_url || "-"}
-Видео: ${video_url || "-"}
-Ошибка: ${errText}`
+`❌ Сбой публикации ${date} ${time}
+→ ${channel}
+Ошибка: ${e?.message||e}`
             ).catch(()=>{});
           }
-          console.error("Send error:", errText);
         }
       }
     }
+
     saveSent();
-    console.log(`Done: ${done}, skipped: ${skipped}, window: ${WINDOW_MIN}m`);
-  })
-  .on("error", (e) => {
-    console.error("CSV read error:", e);
-    process.exit(1);
+    if (done === 0) {
+      if (OWNER_ID) {
+        await tgSend(OWNER_ID,
+`⚠️ GitHub Cron: постов в окне ${WINDOW_MIN} мин не найдено.
+(всего строк: ${rows.length}, пропущено: ${skipped})`
+        ).catch(()=>{});
+      }
+    }
+    console.log(`Done: ${done}, skipped: ${skipped}, window=${WINDOW_MIN}m`);
   });
