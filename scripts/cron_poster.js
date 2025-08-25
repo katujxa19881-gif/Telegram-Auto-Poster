@@ -3,9 +3,9 @@ import fs from "fs";
 import csv from "csv-parser";
 
 const BOT_TOKEN   = process.env.BOT_TOKEN;
-const CHANNEL_ID  = process.env.CHANNEL_ID;  // @channel или -100...
+const CHANNEL_ID  = process.env.CHANNEL_ID; // @channel или numeric id
 const OWNER_ID    = process.env.OWNER_ID || "";
-const WINDOW_MIN  = Number(process.env.WINDOW_MINUTES || 10);
+const WINDOW_MIN  = Number(process.env.WINDOW_MINUTES || 12);
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
   console.error("Missing BOT_TOKEN or CHANNEL_ID env");
@@ -23,9 +23,9 @@ try {
 function saveSent() {
   fs.writeFileSync(SENT_FILE, JSON.stringify([...sent], null, 2));
 }
-
 function short(s, n=140){ return String(s||"").replace(/\s+/g," ").slice(0,n); }
 
+// ==== Google Drive конвертер ====
 function extractDriveId(url = "") {
   try {
     const u = new URL(url);
@@ -57,6 +57,57 @@ function keyOf({date,time,channel_id,text,photo_url,video_url}){
   return Buffer.from(payload).toString("base64").slice(0,32);
 }
 
+// ==== Telegram API ====
+async function tg(method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.description || "TG API error");
+  return j.result;
+}
+async function tgSend(chat_id, text, extra={}) { return tg("sendMessage", {chat_id, text, ...extra}); }
+async function tgGetMe() { return tg("getMe", {}); }
+
+// ==== Клавиатура (URL-кнопки для канала) ====
+let BOT_USERNAME = "";
+async function ensureBotUsername(){
+  if (!BOT_USERNAME) {
+    const me = await tgGetMe();
+    BOT_USERNAME = me.username;
+  }
+}
+function buildKeyboard(){
+  // только URL-кнопки — работают в каналах
+  const base = `https://t.me/${BOT_USERNAME}`;
+  const kb = {
+    inline_keyboard: [
+      [
+        { text: "🧠 Что умеет?", url: `${base}?start=skills` },
+        { text: "💰 Цены",       url: `${base}?start=prices` }
+      ],
+      [
+        { text: "💬 Отзывы",     url: `${base}?start=feedback` },
+        { text: "📝 Заказать",   url: `${base}?start=order` }
+      ]
+    ]
+  };
+  return { reply_markup: kb };
+}
+
+async function sendPost({channel, text, photo_url, video_url}) {
+  await ensureBotUsername();
+  const extra = buildKeyboard(); // добавляем URL-кнопки ко всем постам
+  if (video_url) {
+    return tg("sendVideo", {chat_id: channel, video: video_url, caption: text, ...extra});
+  } else if (photo_url) {
+    return tg("sendPhoto", {chat_id: channel, photo: photo_url, caption: text, ...extra});
+  } else {
+    return tg("sendMessage", {chat_id: channel, text, ...extra});
+  }
+}
+
+// ==== Чтение CSV и публикация ====
 const rows = [];
 fs.createReadStream("avtopost.csv")
   .pipe(csv())
@@ -81,7 +132,6 @@ fs.createReadStream("avtopost.csv")
       const when = new Date(Y,(M||1)-1,D,h||0,m||0);
       if (isNaN(when)) { skipped++; continue; }
 
-      // публикуем то, что попадает в окно [now-window; now]
       if (when <= now && (now - when) <= windowMs) {
         const k = keyOf({date,time,channel_id:channel,text,photo_url,video_url});
         if (sent.has(k)) continue;
@@ -93,7 +143,7 @@ fs.createReadStream("avtopost.csv")
             `✅ GitHub Cron: опубликовано\n${date} ${time} → ${channel}\nТип: ${video_url?"video":(photo_url?"photo":"text")}\nТекст: ${short(text)}`
           );
         } catch(e) {
-          const errText = e?.description || e?.message || String(e);
+          const errText = e?.message || String(e);
           if (OWNER_ID) {
             await tgSend(OWNER_ID,
               `❌ GitHub Cron: сбой публикации\n${date} ${time} → ${channel}\nФото: ${photo_url||"-"}\nВидео: ${video_url||"-"}\nОшибка: ${errText}`
@@ -110,23 +160,3 @@ fs.createReadStream("avtopost.csv")
     console.error("CSV read error:", e);
     process.exit(1);
   });
-
-async function tg(method, body) {
-  const r = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body)
-  });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.description || "TG API error");
-  return j.result;
-}
-async function tgSend(chat_id, text) { return tg("sendMessage", {chat_id, text}); }
-
-async function sendPost({channel, text, photo_url, video_url}) {
-  if (video_url) {
-    return tg("sendVideo", {chat_id: channel, video: video_url, caption: text});
-  } else if (photo_url) {
-    return tg("sendPhoto", {chat_id: channel, photo: photo_url, caption: text});
-  } else {
-    return tg("sendMessage", {chat_id: channel, text});
-  }
-}
