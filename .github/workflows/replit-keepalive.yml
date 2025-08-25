@@ -1,0 +1,16 @@
+name: Replit Keepalive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # каждые 5 минут
+  workflow_dispatch:        # можно запустить вручную
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Replit
+        run: |
+          set -e
+          echo "Pinging ${{ secrets.KEEPALIVE_URL }}"
+          curl -fsS "${{ secrets.KEEPALIVE_URL }}" || exit 0
