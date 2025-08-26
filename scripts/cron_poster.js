@@ -1,7 +1,6 @@
 // scripts/cron_poster.js — Zero-deps автопостер для GitHub Actions
-// Фичи: CSV без зависимостей (кавычки, ,/;), normalizeTime(), антидубли,
-// Google Drive → прямые ссылки, внешние URL-кнопки всегда,
-// + опционально добавляем «🤖 Открыть чат», если бот на Replit жив.
+// Фичи: CSV без зависимостей, photo/video, custom + fallback кнопки,
+// Replit-проверка, антидубли, лог в ЛС
 
 import fs from "fs";
 import https from "https";
@@ -14,19 +13,19 @@ const TZ              = process.env.TZ || "Europe/Kaliningrad";
 const WINDOW_MINUTES  = parseInt(process.env.WINDOW_MINUTES || "20", 10);
 const CSV_PATH        = "avtopost.csv";
 
-// Пинги и внешние ссылки для фолбэка
-const KEEPALIVE_URL   = process.env.KEEPALIVE_URL || "";   // https://...replit.dev/ron?token=...
-const LINK_SKILLS     = process.env.LINK_SKILLS   || "";   // публичная страница
-const LINK_PRICES     = process.env.LINK_PRICES   || "";   // публичная страница
-const LINK_FEEDBACK   = process.env.LINK_FEEDBACK || "";   // публичная страница
-const LINK_ORDER      = process.env.LINK_ORDER    || "https://t.me/Ka_terina8"; // fallback-CTA
+// fallback-кнопки (секреты GitHub)
+const KEEPALIVE_URL   = process.env.KEEPALIVE_URL || "";
+const LINK_SKILLS     = process.env.LINK_SKILLS   || "";
+const LINK_PRICES     = process.env.LINK_PRICES   || "";
+const LINK_FEEDBACK   = process.env.LINK_FEEDBACK || "";
+const LINK_ORDER      = process.env.LINK_ORDER    || "https://t.me/Ka_terina8";
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
-  console.error("Missing BOT_TOKEN or CHANNEL_ID");
+  console.error("❌ Missing BOT_TOKEN or CHANNEL_ID");
   process.exit(1);
 }
 
-// ====== Telegram minimal API (без зависимостей) ======
+// ====== Telegram API ======
 function tgRequest(path, payload) {
   const data = payload ? JSON.stringify(payload) : null;
   const opts = {
@@ -65,7 +64,7 @@ function normalizeTime(t){
   return `${h}:${m}`;
 }
 
-// Быстрая проверка, жив ли Replit-бот (таймаут 3с)
+// Проверка Replit (жив ли бот)
 function checkBotLive(url, timeoutMs=3000){
   if (!url) return Promise.resolve(false);
   return new Promise((resolve)=>{
@@ -91,7 +90,7 @@ function extractDriveId(url=""){
 }
 function convertDriveUrl(url=""){ const id=extractDriveId(url); return id ? `https://drive.google.com/uc?export=download&id=${id}` : url; }
 
-// ====== CSV (кавычки + autodetect ,/;) ======
+// ====== CSV parser ======
 function detectSep(line){ const c=(line.match(/,/g)||[]).length, s=(line.match(/;/g)||[]).length; return s>c?";":","; }
 function splitWithQuotes(line, sep){
   const out=[]; let cur=""; let inQ=false;
@@ -134,7 +133,7 @@ function customButtonsFromRow(r){
 }
 function packRows(btns, perRow=2){ const rows=[]; for(let i=0;i<btns.length;i+=perRow) rows.push(btns.slice(i,i+perRow)); return rows; }
 
-// Всегда строим внешние URL-кнопки (стабильно работает без бота)
+// fallback URL-кнопки всегда
 function buildFallbackKeyboardAlways(){
   const ext=[];
   if (LINK_SKILLS)   ext.push({text:"🧠 Что умеет?", url: LINK_SKILLS});
@@ -146,7 +145,7 @@ function buildFallbackKeyboardAlways(){
   return rows;
 }
 
-// Итоговая клавиатура: приоритет — кнопки из CSV; иначе внешние + (если бот жив) отдельной строкой deeplink
+// итоговые кнопки
 async function buildKeyboard(r, botUsername, botLive){
   const custom = customButtonsFromRow(r);
   if (custom.length) return { reply_markup:{ inline_keyboard: packRows(custom,2) } };
@@ -180,7 +179,6 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
     const windowStart = new Date(now.getTime() - WINDOW_MINUTES*60000);
     const todayStr = now.toISOString().slice(0,10);
 
-    // проверяем Replit-бота
     const botLive = await checkBotLive(KEEPALIVE_URL);
     const botUsername = botLive ? (await tgGetMe()) : "";
 
