@@ -17,10 +17,15 @@ jobs:
           node-version: '20'
 
       - name: Run cron poster
-        run: node scripts/cron_poster.js
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
-          OWNER_ID: ${{ secrets.OWNER_ID }}
-          TZ: ${{ secrets.TZ }}
-          WINDOW_MINUTES: ${{ secrets.WINDOW_MINUTES }}
+  run: node scripts/cron_poster.js
+  env:
+    BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
+    CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+    OWNER_ID:       ${{ secrets.OWNER_ID }}
+    TZ:             ${{ secrets.TZ }}
+    WINDOW_MINUTES: ${{ secrets.WINDOW_MINUTES }}
+    KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}
+    LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}
+    LINK_PRICES:    ${{ secrets.LINK_PRICES }}
+    LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}
+    LINK_ORDER:     ${{ secrets.LINK_ORDER }}
