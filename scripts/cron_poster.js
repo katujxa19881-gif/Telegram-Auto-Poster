@@ -10,7 +10,7 @@ const BOT_TOKEN       = process.env.BOT_TOKEN;
 const CHANNEL_ID      = process.env.CHANNEL_ID;
 const OWNER_ID        = process.env.OWNER_ID || "";
 const TZ              = process.env.TZ || "Europe/Kaliningrad";
-const WINDOW_MINUTES  = parseInt(process.env.WINDOW_MINUTES || "12", 10);
+const WINDOW_MINUTES  = parseInt(process.env.WINDOW_MINUTES || "25", 10);
 const CSV_PATH        = "avtopost.csv";
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
