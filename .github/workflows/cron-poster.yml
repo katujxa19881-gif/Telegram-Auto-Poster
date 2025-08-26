@@ -2,7 +2,7 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: '*/12 * * * *'   # каждые 12 минут проверяем окно
+    - cron: '*/5 * * * *'   # каждые 12 минут проверяем окно
   workflow_dispatch:
 
 jobs:
