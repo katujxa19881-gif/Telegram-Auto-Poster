@@ -223,15 +223,22 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
 
     saveSent();
 
-    if (dueToday>0 && sentCount===0 && OWNER_ID){
-      await tgSendMessage(OWNER_ID, `⚠️ GitHub Cron: постов в окне ${WINDOW_MINUTES} мин не найдено.
-(сегодня «должны быть»: ${dueToday}, фактически отправлено: 0)`);
-    }
+    // считаем, сколько постов попадает именно в текущее окно
+let dueInWindow = 0;
+for (const r of rows) {
+  const date = (r.date || "").trim();
+  const time = normalizeTime(r.time || "");
+  if (!date || !time) continue;
+  const dt = new Date(`${date}T${time}:00`);
+  if (isNaN(dt)) continue;
+  if (dt >= windowStart && dt <= now) dueInWindow++;
+}
 
-    console.log(`Done: dueToday=${dueToday}, sent=${sentCount}, botLive=${botLive}, window=${WINDOW_MINUTES}m`);
-  }catch(e){
-    console.error(e);
-    if (OWNER_ID) await tgSendMessage(OWNER_ID, `❌ Fatal: ${e?.message||e}`);
-    process.exit(1);
-  }
-})();
+// предупреждаем ТОЛЬКО если именно в окне был хотя бы один пост, но ничего не отправлено
+if (dueInWindow > 0 && sentCount === 0 && OWNER_ID) {
+  await tgSendMessage(
+    OWNER_ID,
+    `⚠️ GitHub Cron: в окне ${WINDOW_MINUTES} мин была запланирована публикация, но отправок нет.
+(в окне: ${dueInWindow}, сегодня всего: ${dueToday}, отправлено: 0)`
+  );
+}
