@@ -1,40 +1,43 @@
-// scripts/cron_poster.js — Zero-deps автопостер для GitHub Actions
-// Фичи: CSV без зависимостей, photo/video, custom + fallback кнопки,
-// Replit-проверка, антидубли, лог в ЛС
+// scripts/cron_poster.js — Zero-deps автопостер с догонялкой и таймзоной
+// Фичи: CSV без зависимостей, photo/video, 8 custom-buttons, fallback-кнопки,
+// Replit keepalive, антидубли, умные предупреждения, catch-up + lead window.
 
 import fs from "fs";
 import https from "https";
 
-// ===== ENV =====
+/* ================== ENV ================== */
 const BOT_TOKEN       = process.env.BOT_TOKEN;
 const CHANNEL_ID      = process.env.CHANNEL_ID;
 const OWNER_ID        = process.env.OWNER_ID || "";
 const TZ              = process.env.TZ || "Europe/Kaliningrad";
-const WINDOW_MINUTES  = parseInt(process.env.WINDOW_MINUTES || "20", 10);
-const CSV_PATH        = "avtopost.csv";
 
-// fallback-кнопки (секреты GitHub)
+// Окна публикации:
+const CATCHUP_MINUTES = parseInt(process.env.CATCHUP_MINUTES || "120", 10); // сколько минут назад догоняем
+const LEAD_MINUTES    = parseInt(process.env.LEAD_MINUTES    || "15", 10);  // на сколько минут вперёд можно отправить
+
+// Ссылки/keepalive (опционально)
 const KEEPALIVE_URL   = process.env.KEEPALIVE_URL || "";
 const LINK_SKILLS     = process.env.LINK_SKILLS   || "";
 const LINK_PRICES     = process.env.LINK_PRICES   || "";
 const LINK_FEEDBACK   = process.env.LINK_FEEDBACK || "";
 const LINK_ORDER      = process.env.LINK_ORDER    || "https://t.me/Ka_terina8";
 
+const CSV_PATH        = "avtopost.csv";
+const SENT_FILE       = "sent.json";
+
 if (!BOT_TOKEN || !CHANNEL_ID) {
   console.error("❌ Missing BOT_TOKEN or CHANNEL_ID");
   process.exit(1);
 }
 
-// ====== Telegram API ======
+/* ============== Telegram API ============== */
 function tgRequest(path, payload) {
   const data = payload ? JSON.stringify(payload) : null;
   const opts = {
     hostname: "api.telegram.org",
     path,
     method: data ? "POST" : "GET",
-    headers: data
-      ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) }
-      : {},
+    headers: data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {},
   };
   return new Promise((resolve) => {
     const req = https.request(opts, (res) => {
@@ -54,9 +57,13 @@ async function tgSendPhoto(chat_id, photo, caption, extra = {}) { await tgReques
 async function tgSendVideo(chat_id, video, caption, extra = {}) { await tgRequest(`/bot${BOT_TOKEN}/sendVideo`, { chat_id, video, caption, ...extra }); }
 async function tgGetMe() { const r = await tgRequest(`/bot${BOT_TOKEN}/getMe`); return (r?.ok && r?.result?.username) ? r.result.username : ""; }
 
-// ====== Utils ======
-function short(s, n=140){ return String(s||"").replace(/\s+/g," ").slice(0,n); }
-function normalizeTime(t){
+/* ================= Utils ================= */
+function nowInTZ() {
+  // Надёжно получаем "сейчас" в требуемой таймзоне
+  return new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
+}
+
+function normalizeTime(t) {
   if (!t) return "00:00";
   let [h="0", m="0"] = String(t).split(":");
   h = /^\d+$/.test(h) ? h.padStart(2,"0") : "00";
@@ -64,7 +71,9 @@ function normalizeTime(t){
   return `${h}:${m}`;
 }
 
-// Проверка Replit (жив ли бот)
+function short(s, n=160){ return String(s||"").replace(/\s+/g," ").slice(0,n); }
+
+// Replit keepalive check
 function checkBotLive(url, timeoutMs=3000){
   if (!url) return Promise.resolve(false);
   return new Promise((resolve)=>{
@@ -90,7 +99,7 @@ function extractDriveId(url=""){
 }
 function convertDriveUrl(url=""){ const id=extractDriveId(url); return id ? `https://drive.google.com/uc?export=download&id=${id}` : url; }
 
-// ====== CSV parser ======
+/* ================= CSV ================== */
 function detectSep(line){ const c=(line.match(/,/g)||[]).length, s=(line.match(/;/g)||[]).length; return s>c?";":","; }
 function splitWithQuotes(line, sep){
   const out=[]; let cur=""; let inQ=false;
@@ -122,7 +131,7 @@ function parseCSV(filePath){
   return { rows, sep };
 }
 
-// ====== Кнопки ======
+/* ============= Keyboards ============= */
 function customButtonsFromRow(r){
   const res=[]; for(let i=1;i<=8;i++){
     const t=(r[`btn${i}_text`]||"").trim(), u=(r[`btn${i}_url`]||"").trim();
@@ -133,7 +142,6 @@ function customButtonsFromRow(r){
 }
 function packRows(btns, perRow=2){ const rows=[]; for(let i=0;i<btns.length;i+=perRow) rows.push(btns.slice(i,i+perRow)); return rows; }
 
-// fallback URL-кнопки всегда
 function buildFallbackKeyboardAlways(){
   const ext=[];
   if (LINK_SKILLS)   ext.push({text:"🧠 Что умеет?", url: LINK_SKILLS});
@@ -145,21 +153,17 @@ function buildFallbackKeyboardAlways(){
   return rows;
 }
 
-// итоговые кнопки
 async function buildKeyboard(r, botUsername, botLive){
   const custom = customButtonsFromRow(r);
   if (custom.length) return { reply_markup:{ inline_keyboard: packRows(custom,2) } };
-
   const rows = buildFallbackKeyboardAlways();
   if (botLive && botUsername){
-    const base = `https://t.me/${botUsername}`;
-    rows.push([{ text:"🤖 Открыть чат", url:`${base}?start=hello` }]);
+    rows.push([{ text:"🤖 Открыть чат", url:`https://t.me/${botUsername}?start=hello` }]);
   }
   return { reply_markup:{ inline_keyboard: rows } };
 }
 
-// ====== Anti-dup ======
-const SENT_FILE = "sent.json";
+/* ============= Anti-duplicate ============= */
 let sentSet = new Set();
 try { if (fs.existsSync(SENT_FILE)) sentSet = new Set(JSON.parse(fs.readFileSync(SENT_FILE,"utf8"))); } catch {}
 function saveSent(){ fs.writeFileSync(SENT_FILE, JSON.stringify([...sentSet], null, 2)); }
@@ -168,21 +172,24 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
   return Buffer.from(payload).toString("base64").slice(0,32);
 }
 
-// ====== MAIN ======
+/* ================== MAIN ================== */
 (async () => {
   try{
     const { rows, sep } = parseCSV(CSV_PATH);
     console.log(`CSV: ${CSV_PATH}, sep="${sep}", rows=${rows.length}`);
     if (rows.length===0){ if (OWNER_ID) await tgSendMessage(OWNER_ID,"⚠️ CSV пуст — нет строк."); return; }
 
-    const now = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
-    const windowStart = new Date(now.getTime() - WINDOW_MINUTES*60000);
+    const now = nowInTZ();
     const todayStr = now.toISOString().slice(0,10);
+
+    // окно публикации: [now - CATCHUP; now + LEAD]
+    const windowStart = new Date(now.getTime() - CATCHUP_MINUTES*60000);
+    const windowEnd   = new Date(now.getTime() + LEAD_MINUTES*60000);
 
     const botLive = await checkBotLive(KEEPALIVE_URL);
     const botUsername = botLive ? (await tgGetMe()) : "";
 
-    let dueToday=0, sentCount=0;
+    let dueToday=0, dueInWindow=0, sentCount=0;
 
     for (const r of rows){
       const date=(r.date||"").trim();
@@ -196,49 +203,49 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
       const dt = new Date(`${date}T${time}:00`);
       if (isNaN(dt)) continue;
 
-      if (dt.toISOString().slice(0,10) === todayStr){
-        dueToday++;
-        if (dt>=windowStart && dt<=now){
-          const key = sentKey({date,time,channel,text,photo_url,video_url});
-          if (sentSet.has(key)) continue;
+      // учитываем только "сегодня"
+      if (dt.toISOString().slice(0,10) !== todayStr) continue;
 
-          const keyboard = await buildKeyboard(r, botUsername, botLive);
-          if (video_url) await tgSendVideo(channel, video_url, text, keyboard);
-          else if (photo_url) await tgSendPhoto(channel, photo_url, text, keyboard);
-          else await tgSendMessage(channel, text, keyboard);
+      dueToday++;
 
-          sentSet.add(key); sentCount++;
+      if (dt >= windowStart && dt <= windowEnd) {
+        dueInWindow++;
+        const key = sentKey({date,time,channel,text,photo_url,video_url});
+        if (sentSet.has(key)) continue;
 
-          if (OWNER_ID){
-            await tgSendMessage(
-              OWNER_ID,
-              `✅ Опубликовано: ${date} ${time}\n→ ${channel}\nТип: ${video_url?"video":(photo_url?"photo":"text")}\nКнопки: ${
-                customButtonsFromRow(r).length ? "custom" : (botLive ? "fallback+deeplink" : "fallback")
-              }\nТекст: ${short(text)}`
-            ).catch(()=>{});
-          }
+        const keyboard = await buildKeyboard(r, botUsername, botLive);
+        if (video_url) await tgSendVideo(channel, video_url, text, keyboard);
+        else if (photo_url) await tgSendPhoto(channel, photo_url, text, keyboard);
+        else await tgSendMessage(channel, text, keyboard);
+
+        sentSet.add(key); sentCount++;
+
+        if (OWNER_ID){
+          await tgSendMessage(
+            OWNER_ID,
+            `✅ Опубликовано: ${date} ${time}\n→ ${channel}\nТип: ${video_url?"video":(photo_url?"photo":"text")}\nКнопки: ${
+              customButtonsFromRow(r).length ? "custom" : (botLive ? "fallback+deeplink" : "fallback")
+            }\nТекст: ${short(text)}`
+          ).catch(()=>{});
         }
       }
     }
 
     saveSent();
 
-    // считаем, сколько постов попадает именно в текущее окно
-let dueInWindow = 0;
-for (const r of rows) {
-  const date = (r.date || "").trim();
-  const time = normalizeTime(r.time || "");
-  if (!date || !time) continue;
-  const dt = new Date(`${date}T${time}:00`);
-  if (isNaN(dt)) continue;
-  if (dt >= windowStart && dt <= now) dueInWindow++;
-}
-
-// предупреждаем ТОЛЬКО если именно в окне был хотя бы один пост, но ничего не отправлено
-if (dueInWindow > 0 && sentCount === 0 && OWNER_ID) {
-  await tgSendMessage(
-    OWNER_ID,
-    `⚠️ GitHub Cron: в окне ${WINDOW_MINUTES} мин была запланирована публикация, но отправок нет.
+    // Умное предупреждение: только если что-то было в окне, но не отправилось
+    if (dueInWindow > 0 && sentCount === 0 && OWNER_ID) {
+      await tgSendMessage(
+        OWNER_ID,
+        `⚠️ GitHub Cron: в окне ${CATCHUP_MINUTES} мин назад и ${LEAD_MINUTES} мин вперёд нашлись посты, но ничего не отправлено.
 (в окне: ${dueInWindow}, сегодня всего: ${dueToday}, отправлено: 0)`
-  );
-}
+      );
+    }
+
+    console.log(`Done: dueToday=${dueToday}, dueInWindow=${dueInWindow}, sent=${sentCount}, botLive=${botLive}, window=[-${CATCHUP_MINUTES}; +${LEAD_MINUTES}]min`);
+  }catch(e){
+    console.error(e);
+    if (OWNER_ID) await tgSendMessage(OWNER_ID, `❌ Fatal: ${e?.message||e}`);
+    process.exit(1);
+  }
+})();
