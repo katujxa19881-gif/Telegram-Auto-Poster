@@ -1,29 +1,39 @@
-// scripts/cron_poster.js — Zero-deps автопостер с догонялкой и таймзоной
+// scripts/cron_poster.js — Zero-deps автопостер с догонялкой, таймзоной и режимом уведомлений
+// Режимы уведомлений: NOTIFY_MODE=every | summary | silent
+// - every: предупреждение на каждом прогоне, если в окне был пост и не отправился
+// - summary: только вечерняя сводка один раз в день (час задаётся DAILY_REPORT_HOUR)
+// - silent: никаких уведомлений в ЛС
+//
 // Фичи: CSV без зависимостей, photo/video, 8 custom-buttons, fallback-кнопки,
-// Replit keepalive, антидубли, умные предупреждения, catch-up + lead window.
+// Replit keepalive, антидубли, catch-up + lead window, умные уведомления, дневная сводка.
 
 import fs from "fs";
 import https from "https";
 
 /* ================== ENV ================== */
-const BOT_TOKEN       = process.env.BOT_TOKEN;
-const CHANNEL_ID      = process.env.CHANNEL_ID;
-const OWNER_ID        = process.env.OWNER_ID || "";
-const TZ              = process.env.TZ || "Europe/Kaliningrad";
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const OWNER_ID = process.env.OWNER_ID || "";
+const TZ = process.env.TZ || "Europe/Kaliningrad";
 
 // Окна публикации:
 const CATCHUP_MINUTES = parseInt(process.env.CATCHUP_MINUTES || "120", 10); // сколько минут назад догоняем
-const LEAD_MINUTES    = parseInt(process.env.LEAD_MINUTES    || "15", 10);  // на сколько минут вперёд можно отправить
+const LEAD_MINUTES = parseInt(process.env.LEAD_MINUTES || "15", 10); // на сколько минут вперёд можно отправить
+
+// Режимы уведомлений
+const NOTIFY_MODE = (process.env.NOTIFY_MODE || "summary").toLowerCase(); // every | summary | silent
+const DAILY_REPORT_HOUR = parseInt(process.env.DAILY_REPORT_HOUR || "21", 10); // час дня для сводки (по TZ)
 
 // Ссылки/keepalive (опционально)
-const KEEPALIVE_URL   = process.env.KEEPALIVE_URL || "";
-const LINK_SKILLS     = process.env.LINK_SKILLS   || "";
-const LINK_PRICES     = process.env.LINK_PRICES   || "";
-const LINK_FEEDBACK   = process.env.LINK_FEEDBACK || "";
-const LINK_ORDER      = process.env.LINK_ORDER    || "https://t.me/Ka_terina8";
+const KEEPALIVE_URL = process.env.KEEPALIVE_URL || "";
+const LINK_SKILLS = process.env.LINK_SKILLS || "";
+const LINK_PRICES = process.env.LINK_PRICES || "";
+const LINK_FEEDBACK = process.env.LINK_FEEDBACK || "";
+const LINK_ORDER = process.env.LINK_ORDER || "https://t.me/Ka_terina8";
 
-const CSV_PATH        = "avtopost.csv";
-const SENT_FILE       = "sent.json";
+const CSV_PATH = "avtopost.csv";
+const SENT_FILE = "sent.json";
+const STATS_FILE = "stats.json"; // для дневной сводки
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
   console.error("❌ Missing BOT_TOKEN or CHANNEL_ID");
@@ -58,11 +68,7 @@ async function tgSendVideo(chat_id, video, caption, extra = {}) { await tgReques
 async function tgGetMe() { const r = await tgRequest(`/bot${BOT_TOKEN}/getMe`); return (r?.ok && r?.result?.username) ? r.result.username : ""; }
 
 /* ================= Utils ================= */
-function nowInTZ() {
-  // Надёжно получаем "сейчас" в требуемой таймзоне
-  return new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
-}
-
+function nowInTZ() { return new Date(new Date().toLocaleString("en-US", { timeZone: TZ })); }
 function normalizeTime(t) {
   if (!t) return "00:00";
   let [h="0", m="0"] = String(t).split(":");
@@ -70,7 +76,6 @@ function normalizeTime(t) {
   m = /^\d+$/.test(m) ? m.padStart(2,"0") : "00";
   return `${h}:${m}`;
 }
-
 function short(s, n=160){ return String(s||"").replace(/\s+/g," ").slice(0,n); }
 
 // Replit keepalive check
@@ -144,9 +149,9 @@ function packRows(btns, perRow=2){ const rows=[]; for(let i=0;i<btns.length;i+=p
 
 function buildFallbackKeyboardAlways(){
   const ext=[];
-  if (LINK_SKILLS)   ext.push({text:"🧠 Что умеет?", url: LINK_SKILLS});
-  if (LINK_PRICES)   ext.push({text:"💰 Цены",       url: LINK_PRICES});
-  if (LINK_FEEDBACK) ext.push({text:"💬 Отзывы",     url: LINK_FEEDBACK});
+  if (LINK_SKILLS) ext.push({text:"🧠 Что умеет?", url: LINK_SKILLS});
+  if (LINK_PRICES) ext.push({text:"💰 Цены", url: LINK_PRICES});
+  if (LINK_FEEDBACK) ext.push({text:"💬 Отзывы", url: LINK_FEEDBACK});
   const orderBtn = {text:"📝 Заказать", url: LINK_ORDER};
   const rows=[], base=[...ext, orderBtn];
   for (let i=0;i<base.length;i+=2) rows.push(base.slice(i,i+2));
@@ -172,19 +177,33 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
   return Buffer.from(payload).toString("base64").slice(0,32);
 }
 
+/* ============= Daily stats for summary ============= */
+function loadStats(){
+  try{ if (fs.existsSync(STATS_FILE)) return JSON.parse(fs.readFileSync(STATS_FILE,"utf8")); }
+  catch{}
+  return {};
+}
+function saveStats(obj){ fs.writeFileSync(STATS_FILE, JSON.stringify(obj, null, 2)); }
+
 /* ================== MAIN ================== */
 (async () => {
   try{
     const { rows, sep } = parseCSV(CSV_PATH);
     console.log(`CSV: ${CSV_PATH}, sep="${sep}", rows=${rows.length}`);
-    if (rows.length===0){ if (OWNER_ID) await tgSendMessage(OWNER_ID,"⚠️ CSV пуст — нет строк."); return; }
+    if (rows.length===0){
+      if (OWNER_ID && NOTIFY_MODE==="every"){
+        await tgSendMessage(OWNER_ID,"⚠️ CSV пуст — нет строк.");
+      }
+      return;
+    }
 
     const now = nowInTZ();
     const todayStr = now.toISOString().slice(0,10);
+    const hourNow = now.getHours();
 
     // окно публикации: [now - CATCHUP; now + LEAD]
     const windowStart = new Date(now.getTime() - CATCHUP_MINUTES*60000);
-    const windowEnd   = new Date(now.getTime() + LEAD_MINUTES*60000);
+    const windowEnd = new Date(now.getTime() + LEAD_MINUTES*60000);
 
     const botLive = await checkBotLive(KEEPALIVE_URL);
     const botUsername = botLive ? (await tgGetMe()) : "";
@@ -220,7 +239,8 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
 
         sentSet.add(key); sentCount++;
 
-        if (OWNER_ID){
+        // хотим/не хотим оперативный отчёт об отправке — оставим всегда полезным
+        if (OWNER_ID && NOTIFY_MODE!=="silent"){
           await tgSendMessage(
             OWNER_ID,
             `✅ Опубликовано: ${date} ${time}\n→ ${channel}\nТип: ${video_url?"video":(photo_url?"photo":"text")}\nКнопки: ${
@@ -233,19 +253,47 @@ function sentKey({date,time,channel,text,photo_url,video_url}){
 
     saveSent();
 
-    // Умное предупреждение: только если что-то было в окне, но не отправилось
-    if (dueInWindow > 0 && sentCount === 0 && OWNER_ID) {
-      await tgSendMessage(
-        OWNER_ID,
-        `⚠️ GitHub Cron: в окне ${CATCHUP_MINUTES} мин назад и ${LEAD_MINUTES} мин вперёд нашлись посты, но ничего не отправлено.
-(в окне: ${dueInWindow}, сегодня всего: ${dueToday}, отправлено: 0)`
-      );
-    }
+    /* ======== Ежедневная статистика ========= */
+    const stats = loadStats();
+    const day = stats[todayStr] || { should: 0, sent: 0, missedWindows: 0, reported: false };
+    day.should = dueToday; // сколько всего запланировано на сегодня
+    day.sent += sentCount; // сколько отправили (кумулятивно за день)
+    if (dueInWindow > 0 && sentCount === 0) day.missedWindows += 1; // окно было, но ничего не ушло
+    stats[todayStr] = day;
+    saveStats(stats);
 
-    console.log(`Done: dueToday=${dueToday}, dueInWindow=${dueInWindow}, sent=${sentCount}, botLive=${botLive}, window=[-${CATCHUP_MINUTES}; +${LEAD_MINUTES}]min`);
+    // == Поведение уведомлений ==
+    if (NOTIFY_MODE === "every") {
+      // Предупреждаем только если в текущем окне действительно что-то было, но не ушло
+      if (dueInWindow > 0 && sentCount === 0 && OWNER_ID) {
+        await tgSendMessage(
+          OWNER_ID,
+          `⚠️ GitHub Cron: в окне ${CATCHUP_MINUTES} мин назад и ${LEAD_MINUTES} мин вперёд была публикация, но отправок нет.
+(в окне: ${dueInWindow}, сегодня всего: ${dueToday}, отправлено сейчас: 0)`
+        );
+      }
+    } else if (NOTIFY_MODE === "summary" && OWNER_ID) {
+      // Раз в день (в указанное DAILY_REPORT_HOUR) присылаем сводку, если ещё не прислали
+      if (hourNow === DAILY_REPORT_HOUR && !day.reported) {
+        const msg =
+          `📊 Сводка за ${todayStr} (${TZ})\n` +
+          `— Запланировано: ${day.should}\n` +
+          `— Отправлено: ${day.sent}\n` +
+          `— Пропущенных окон: ${day.missedWindows}\n\n` +
+          `Окно публикации: catch-up ${CATCHUP_MINUTES} мин назад, lead ${LEAD_MINUTES} мин вперёд.`;
+        await tgSendMessage(OWNER_ID, msg).catch(()=>{});
+        day.reported = true;
+        stats[todayStr] = day;
+        saveStats(stats);
+      }
+    }
+    // silent — ничего не шлём
+
+    console.log(`Done: dueToday=${dueToday}, dueInWindow=${dueInWindow}, sentNow=${sentCount}, botLive=${botLive}, window=[-${CATCHUP_MINUTES}; +${LEAD_MINUTES}]min, notify=${NOTIFY_MODE}`);
   }catch(e){
     console.error(e);
-    if (OWNER_ID) await tgSendMessage(OWNER_ID, `❌ Fatal: ${e?.message||e}`);
+    if (OWNER_ID && NOTIFY_MODE!=="silent") await tgSendMessage(OWNER_ID, `❌ Fatal: ${e?.message||e}`);
     process.exit(1);
   }
 })();
+
