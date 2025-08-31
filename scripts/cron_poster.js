@@ -104,35 +104,111 @@ function extractDriveId(url=""){
 }
 function convertDriveUrl(url=""){ const id=extractDriveId(url); return id ? `https://drive.google.com/uc?export=download&id=${id}` : url; }
 
-/* ================= CSV ================== */
-function detectSep(line){ const c=(line.match(/,/g)||[]).length, s=(line.match(/;/g)||[]).length; return s>c?";":","; }
-function splitWithQuotes(line, sep){
-  const out=[]; let cur=""; let inQ=false;
-  for (let i=0;i<line.length;i++){
-    const ch=line[i];
-    if (ch === '"'){ if (inQ && line[i+1] === '"'){ cur+='"'; i++; } else inQ=!inQ; }
-    else if (ch === sep && !inQ){ out.push(cur); cur=""; }
-    else cur+=ch;
+/* ================= CSV (толстый парсер) ================== */
+// Поддерживает:
+// - многострочные ячейки (в кавычках),
+// - экранирование кавычек "" внутри кавычек,
+// - выбор разделителя , или ; по первой строке (вне кавычек),
+// - алиасы photo/video, конвертацию Google Drive ссылок,
+// - \n в тексте (и реальные переносы строк).
+
+function detectSepFromHeader(src) {
+  // читаем до первого перевода строки вне кавычек и считаем , и ;
+  let inQ = false;
+  let commas = 0, semis = 0;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '"') {
+      if (inQ && src[i + 1] === '"') { i++; /* escaped quote */ }
+      else inQ = !inQ;
+    } else if (!inQ && (ch === '\n')) {
+      break;
+    } else if (!inQ && ch === ',') commas++;
+    else if (!inQ && ch === ';') semis++;
   }
-  out.push(cur); return out;
+  return semis > commas ? ';' : ',';
 }
-function parseCSV(filePath){
-  const raw = fs.readFileSync(filePath,"utf8").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
-  const lines = raw.split("\n").filter(l=>l.length>0);
-  if (lines.length===0) return { rows:[], sep:"," };
-  const sep = detectSep(lines[0]);
-  const headers = splitWithQuotes(lines[0], sep).map(h=>h.trim());
-  const rows=[];
-  for (let i=1;i<lines.length;i++){
-    const arr = splitWithQuotes(lines[i], sep);
-    if (arr.every(c=>c.trim()==="")) continue;
-    const r={}; headers.forEach((h,idx)=>r[h]=(arr[idx]??"").trim());
-    if (!r.photo_url && r.photo) r.photo_url=r.photo;
-    if (!r.video_url && r.video) r.video_url=r.video;
-    if (r.photo_url) r.photo_url=convertDriveUrl(r.photo_url);
-    if (r.video_url) r.video_url=convertDriveUrl(r.video_url);
-    rows.push(r);
+
+function parseCSV(srcPath) {
+  let s = fs.readFileSync(srcPath, "utf8");
+  // нормализуем переносы и убираем BOM
+  s = s.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!s.trim()) return { rows: [], sep: "," };
+
+  const sep = detectSepFromHeader(s);
+
+  // Разбираем весь файл посимвольно
+  const records = [];
+  let row = [];
+  let field = "";
+  let inQ = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (ch === '"') {
+      // экранированная кавычка "" → "
+      if (inQ && s[i + 1] === '"') { field += '"'; i++; }
+      else inQ = !inQ;
+      continue;
+    }
+
+    if (!inQ && ch === sep) {
+      row.push(field);
+      field = "";
+      continue;
+    }
+
+    if (!inQ && ch === '\n') {
+      row.push(field);
+      field = "";
+      // пропускаем пустые строки полностью
+      if (row.some(c => String(c).trim() !== "")) {
+        records.push(row);
+      }
+      row = [];
+      continue;
+    }
+
+    field += ch;
   }
+
+  // последние хвосты
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    if (row.some(c => String(c).trim() !== "")) records.push(row);
+  }
+
+  if (records.length === 0) return { rows: [], sep };
+
+  const headers = records[0].map(h => String(h || "").trim());
+  const dataRows = records.slice(1);
+
+  const rows = [];
+  for (const rec of dataRows) {
+    const obj = {};
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      const v = (rec[i] ?? "").toString();
+      obj[h] = v;
+    }
+
+    // алиасы
+    if (!obj.photo_url && obj.photo) obj.photo_url = obj.photo;
+    if (!obj.video_url && obj.video) obj.video_url = obj.video;
+
+    // Google Drive → прямую ссылку
+    if (obj.photo_url) obj.photo_url = convertDriveUrl(obj.photo_url.trim());
+    if (obj.video_url) obj.video_url = convertDriveUrl(obj.video_url.trim());
+
+    // поддержка \n как текстового литерала + реальные переносы уже сохранены
+    if (obj.text) obj.text = obj.text.replace(/\\n/g, "\n");
+
+    // пропуск полностью пустых строк
+    const meaningful = Object.values(obj).some(v => String(v).trim() !== "");
+    if (meaningful) rows.push(obj);
+  }
+
   return { rows, sep };
 }
 
