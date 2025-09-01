@@ -24,6 +24,7 @@ jobs:
 
       TZ:             ${{ secrets.TZ }}                 # напр. Europe/Kaliningrad
       WINDOW_MINUTES: ${{ secrets.WINDOW_MINUTES }}     # напр. 30
+      REPORT_HOUR: '21'
 
       # опционально: проверка «живости» Replit и внешние страницы
       KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}      # https://...replit.dev/ron?token=...
