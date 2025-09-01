@@ -250,11 +250,49 @@ async function main() {
     }
   }
 
-  writeSent(sent);
+  // ---- УВЕДОМЛЕНИЯ: только по факту и вечерний отчёт ----
+writeSent(sent);
+
+// 1) Мгновенное уведомление — только если что-то опубликовали
+if (posted > 0) {
   await TG.notifyOwner(
-    `GitHub Cron: окно ${WINDOW_MIN} мин\nНайдено к публикации: ${due}\nОпубликовано: ${posted}`
+    `✅ Опубликовано: ${posted} (окно ${WINDOW_MIN} мин)`
   );
 }
+
+// 2) Разовый вечерний отчёт (по local TZ раннера)
+const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10); // час суток, например 21
+const todayStr = new Date().toISOString().slice(0, 10);            // YYYY-MM-DD (по UTC, но нам важно только дата)
+const nowLocal = new Date();                                       // будет в TZ раннера (см. workflow)
+
+const needDailyReport =
+  nowLocal.getHours() >= REPORT_HOUR &&
+  (sent.__report_date !== todayStr);
+
+// Посчитаем план/факт за сегодня
+if (needDailyReport) {
+  let totalToday = 0;
+  let sentToday  = 0;
+
+  for (const row of csv.rows) {
+    const d = (row.date || "").trim();
+    if (d === todayStr) {
+      totalToday++;
+      const key = `${row.date} ${row.time} ${(row.photo_url || "")}${(row.video_url || "")}`;
+      if (sent[key]) sentToday++;
+    }
+  }
+
+  await TG.notifyOwner(
+    `🗓 Ежедневный отчёт (${todayStr}):\n` +
+    `Запланировано на сегодня: ${totalToday}\n` +
+    `Фактически опубликовано: ${sentToday}`
+  );
+
+  sent.__report_date = todayStr;
+  writeSent(sent); // сохраним флаг, чтобы не повторяться
+}
+
 
 main().catch(async (e) => {
   console.error(e);
