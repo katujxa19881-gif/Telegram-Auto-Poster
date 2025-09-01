@@ -23,7 +23,7 @@ jobs:
       OWNER_ID:       ${{ secrets.OWNER_ID }}
 
       TZ:             ${{ secrets.TZ }}                 # напр. Europe/Kaliningrad
-      WINDOW_MINUTES: ${{ secrets.WINDOW_MINUTES }}     # напр. 30
+      WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}    # например 30
       REPORT_HOUR: '21'
 
       # опционально: проверка «живости» Replit и внешние страницы
