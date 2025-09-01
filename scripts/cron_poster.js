@@ -9,14 +9,14 @@ const BOT_TOKEN  = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;     // -100XXXXXXXXXX  (НЕ @username!)
 const OWNER_ID   = process.env.OWNER_ID || ""; // отчеты в ЛС (опц.)
 const WINDOW_MIN = parseInt(process.env.WINDOW_MIN || "12", 10); // окно поиска постов, мин.
+const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10);
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
   console.error("Missing BOT_TOKEN or CHANNEL_ID env");
   process.exit(1);
 }
 
-// Публикуем ОТ ИМЕНИ КАНАЛА.
-// Можно задать отдельным секретом SENDER_CHAT_ID, но по умолчанию == CHANNEL_ID.
+// Публикуем ОТ ИМЕНИ КАНАЛА (по умолчанию таким же id)
 const SENDER_CHAT_ID = process.env.SENDER_CHAT_ID || CHANNEL_ID;
 
 // =================== Утилиты ===================
@@ -27,19 +27,16 @@ function convertDriveUrl(u) {
   try {
     const url = new URL(u.trim());
     if (url.hostname.includes("drive.google.com")) {
-      // /file/d/<id>/view → https://drive.google.com/uc?export=download&id=<id>
       const m = url.pathname.match(/\/file\/d\/([^/]+)/);
       if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
     }
   } catch (_) {}
-  return u.trim();
+  return (u || "").trim();
 }
 
 function toISOLocal(dateStr, timeStr) {
-  // Ожидаем YYYY-MM-DD и HH:MM в локальном TZ раннера (в воркфлоу можно выставить TZ)
   const [Y, M, D] = dateStr.split("-").map(Number);
   const [h, m]    = timeStr.split(":").map(Number);
-  // Date(...) создается в локальной зоне
   return new Date(Y, (M || 1) - 1, D, h || 0, m || 0);
 }
 
@@ -151,7 +148,7 @@ const TG = {
   async sendText(text, reply_markup) {
     return this.call("sendMessage", {
       chat_id: CHANNEL_ID,
-      sender_chat_id: SENDER_CHAT_ID,   // ← публикуем от имени канала
+      sender_chat_id: SENDER_CHAT_ID,
       text,
       parse_mode: "HTML",
       disable_web_page_preview: false,
@@ -207,6 +204,7 @@ async function main() {
   const now  = new Date();
 
   let due = 0, posted = 0;
+
   for (const row of csv.rows) {
     const date = (row.date || "").trim();
     const time = (row.time || "").trim();
@@ -225,7 +223,6 @@ async function main() {
     const kb = buildInlineKeyboard(row);
     try {
       if (row.photo_url) {
-        // подпись не длиннее ~1000 символов
         const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
         await TG.sendPhoto(row.photo_url, cap, kb);
         if (text.length > 1000) {
@@ -250,49 +247,45 @@ async function main() {
     }
   }
 
-  // ---- УВЕДОМЛЕНИЯ: только по факту и вечерний отчёт ----
-writeSent(sent);
+  // фиксируем лог
+  writeSent(sent);
 
-// 1) Мгновенное уведомление — только если что-то опубликовали
-if (posted > 0) {
-  await TG.notifyOwner(
-    `✅ Опубликовано: ${posted} (окно ${WINDOW_MIN} мин)`
-  );
-}
-
-// 2) Разовый вечерний отчёт (по local TZ раннера)
-const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10); // час суток, например 21
-const todayStr = new Date().toISOString().slice(0, 10);            // YYYY-MM-DD (по UTC, но нам важно только дата)
-const nowLocal = new Date();                                       // будет в TZ раннера (см. workflow)
-
-const needDailyReport =
-  nowLocal.getHours() >= REPORT_HOUR &&
-  (sent.__report_date !== todayStr);
-
-// Посчитаем план/факт за сегодня
-if (needDailyReport) {
-  let totalToday = 0;
-  let sentToday  = 0;
-
-  for (const row of csv.rows) {
-    const d = (row.date || "").trim();
-    if (d === todayStr) {
-      totalToday++;
-      const key = `${row.date} ${row.time} ${(row.photo_url || "")}${(row.video_url || "")}`;
-      if (sent[key]) sentToday++;
-    }
+  // мгновенное уведомление — только если что-то опубликовали
+  if (posted > 0) {
+    await TG.notifyOwner(`✅ Опубликовано: ${posted} (окно ${WINDOW_MIN} мин)`);
   }
 
-  await TG.notifyOwner(
-    `🗓 Ежедневный отчёт (${todayStr}):\n` +
-    `Запланировано на сегодня: ${totalToday}\n` +
-    `Фактически опубликовано: ${sentToday}`
-  );
+  // вечерний отчёт один раз
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const nowLocal = new Date();
 
-  sent.__report_date = todayStr;
-  writeSent(sent); // сохраним флаг, чтобы не повторяться
+  const needDailyReport =
+    nowLocal.getHours() >= REPORT_HOUR &&
+    (sent.__report_date !== todayStr);
+
+  if (needDailyReport) {
+    let totalToday = 0;
+    let sentToday  = 0;
+
+    for (const row of csv.rows) {
+      const d = (row.date || "").trim();
+      if (d === todayStr) {
+        totalToday++;
+        const key = `${row.date} ${row.time} ${(row.photo_url || "")}${(row.video_url || "")}`;
+        if (sent[key]) sentToday++;
+      }
+    }
+
+    await TG.notifyOwner(
+      `🗓 Ежедневный отчёт (${todayStr}):\n` +
+      `Запланировано на сегодня: ${totalToday}\n` +
+      `Фактически опубликовано: ${sentToday}`
+    );
+
+    sent.__report_date = todayStr;
+    writeSent(sent);
+  }
 }
-
 
 main().catch(async (e) => {
   console.error(e);
