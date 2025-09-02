@@ -18,24 +18,23 @@ jobs:
 
     # === все переменные, которые читаются скриптом scripts/cron_poster.js ===
     env:
-      BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-      OWNER_ID:       ${{ secrets.OWNER_ID }}
+  BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
+  CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
+  OWNER_ID:       ${{ secrets.OWNER_ID }}
 
-      TZ:             ${{ secrets.TZ }}                 # напр. Europe/Kaliningrad
-      WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}    # например 30
-      REPORT_HOUR: '21'
-      # НОВОЕ:
+  TZ:             ${{ secrets.TZ }}
+  WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}
+  REPORT_HOUR:    '21'
+
   COOL_DOWN_MIN:  '180'     # не публиковать одинаковое в течение 3 часов
-  MAMAX_PER_RUN:    '1'       # не более 1 поста за один прогон
+  MAX_PER_RUN:    '1'       # не более 1 поста за один прогон
 
-      # опционально: проверка «живости» Replit и внешние страницы
-      KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}      # https://...replit.dev/ron?token=...
-      LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}        # пост/страница "Что умеет"
-      LINK_PRICES:    ${{ secrets.LINK_PRICES }}        # пост/страница "Цены"
-      LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}      # пост/страница "Отзывы"
-      LINK_ORDER:     ${{ secrets.LINK_ORDER }}         # CTA, напр. https://t.me/Ka_terina8
-
+  KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}
+  LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}
+  LINK_PRICES:    ${{ secrets.LINK_PRICES }}
+  LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}
+  LINK_ORDER:     ${{ secrets.LINK_ORDER }}
+  
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
