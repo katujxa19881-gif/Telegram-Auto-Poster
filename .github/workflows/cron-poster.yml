@@ -2,65 +2,70 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # запуск каждые 5 минут
-  workflow_dispatch:         # ручной запуск
+    - cron: "*/5 * * * *"      # запуск каждые 5 минут
+  workflow_dispatch:           # ручной запуск из вкладки Actions
 
+# не допускаем одновременные прогоны одного и того же workflow
 concurrency:
   group: telegram-auto-poster
   cancel-in-progress: true
 
+# нужно, чтобы пушить sent.json обратно в репозиторий
 permissions:
-  contents: write            # нужно, чтобы пушить sent.json обратно в репо
+  contents: write
 
 jobs:
   post:
     runs-on: ubuntu-latest
 
-    # === все переменные, которые читаются скриптом scripts/cron_poster.js ===
+    # === переменные окружения для scripts/cron_poster.js ===
     env:
-  BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
-  CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}
-  OWNER_ID:       ${{ secrets.OWNER_ID }}
+      BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
+      CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}      # например: -1001234567890
+      OWNER_ID:       ${{ secrets.OWNER_ID }}        # ваш user id для уведомлений (опционально)
 
-  TZ:             ${{ secrets.TZ }}
-  WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}
-  REPORT_HOUR:    '21'
+      TZ:             ${{ secrets.TZ }}              # например: Europe/Kaliningrad
+      WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}      # окно поиска, минут (например: 20)
+      REPORT_HOUR:    ${{ secrets.REPORT_HOUR }}     # час суток для дневного отчёта (например: 21)
 
-  COOL_DOWN_MIN:  '180'     # не публиковать одинаковое в течение 3 часов
-  MAX_PER_RUN:    '1'       # не более 1 поста за один прогон
+      # антидубли и лимит публикаций за прогон
+      MAX_PER_RUN:    ${{ secrets.MAX_PER_RUN }}     # например: 1
+      COOL_DOWN_MIN:  ${{ secrets.COOL_DOWN_MIN }}   # например: 180 (3 часа)
 
-  KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}
-  LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}
-  LINK_PRICES:    ${{ secrets.LINK_PRICES }}
-  LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}
-  LINK_ORDER:     ${{ secrets.LINK_ORDER }}
-  
+      # публиковать от имени канала (по умолчанию = CHANNEL_ID)
+      SENDER_CHAT_ID: ${{ secrets.SENDER_CHAT_ID }}
+
+      # опционально: «будилка» Replit/лендинга и внешние ссылки для кнопок
+      KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}
+      LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}
+      LINK_PRICES:    ${{ secrets.LINK_PRICES }}
+      LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}
+      LINK_ORDER:     ${{ secrets.LINK_ORDER }}
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # важно для git pull/push
+          fetch-depth: 0     # важно, чтобы работали pull/push
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # скрипт без зависимостей — npm install не нужен
       - name: Run cron poster
         run: node scripts/cron_poster.js
 
-      # определяем, изменился ли sent.json (true/false в outputs)
+      # смотрим, изменился ли sent.json — если да, то коммитим
       - name: Detect changes in sent.json
         id: changes
         run: |
           if git diff --quiet -- sent.json; then
-            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # коммитим и пушим только если действительно есть изменения
       - name: Commit sent.json
         if: steps.changes.outputs.changed == 'true'
         run: |
