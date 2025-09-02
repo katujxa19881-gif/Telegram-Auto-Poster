@@ -27,7 +27,7 @@ jobs:
       REPORT_HOUR: '21'
       # НОВОЕ:
   COOL_DOWN_MIN:  '180'     # не публиковать одинаковое в течение 3 часов
-  MAX_PER_RUN:    '1'       # не более 1 поста за один прогон
+  MAMAX_PER_RUN:    '1'       # не более 1 поста за один прогон
 
       # опционально: проверка «живости» Replit и внешние страницы
       KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}      # https://...replit.dev/ron?token=...
