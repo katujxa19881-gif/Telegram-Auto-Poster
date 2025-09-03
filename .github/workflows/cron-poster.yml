@@ -2,77 +2,71 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: "*/5 * * * *"      # запуск каждые 5 минут
-  workflow_dispatch:           # ручной запуск из вкладки Actions
+    - cron: "*/5 * * * *"        # запуск каждые 5 минут
+  workflow_dispatch:              # ручной запуск из Actions
 
-# не допускаем одновременные прогоны одного и того же workflow
 concurrency:
-  group: telegram-auto-poster
+  group: telegram-auto-poster     # не допускаем параллельных запусков
   cancel-in-progress: true
 
-# нужно, чтобы пушить sent.json обратно в репозиторий
 permissions:
-  contents: write
+  contents: write                 # нужно, чтобы пушить sent.json обратно в репо
 
 jobs:
   post:
     runs-on: ubuntu-latest
 
-    # === переменные окружения для scripts/cron_poster.js ===
+    # ========= переменные окружения для scripts/cron_poster.js =========
     env:
-      BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}      # например: -1001234567890
-      OWNER_ID:       ${{ secrets.OWNER_ID }}        # ваш user id для уведомлений (опционально)
+      BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}        # токен бота
+      CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}       # -100XXXXXXXXXXXX (НЕ @username)
+      OWNER_ID:       ${{ secrets.OWNER_ID }}         # кому слать отчёты в ЛС (опционально)
 
-      TZ:             ${{ secrets.TZ }}              # например: Europe/Kaliningrad
-      WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}      # окно поиска, минут (например: 20)
-      REPORT_HOUR:    ${{ secrets.REPORT_HOUR }}     # час суток для дневного отчёта (например: 21)
+      TZ:             ${{ secrets.TZ }}               # напр. Europe/Kaliningrad
+      WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}       # окно поиска постов, мин. (напр. 30)
+      REPORT_HOUR:    ${{ secrets.REPORT_HOUR }}      # час вечернего отчёта (напр. 21)
 
-      # антидубли и лимит публикаций за прогон
-      MAX_PER_RUN:    ${{ secrets.MAX_PER_RUN }}     # например: 1
-      COOL_DOWN_MIN:  ${{ secrets.COOL_DOWN_MIN }}   # например: 180 (3 часа)
+      # Если в скрипте используете лимиты/антидубль — оставьте; если нет, можно убрать
+      MAX_PER_RUN:    ${{ secrets.MAX_PER_RUN }}      # лимит постов за один прогон (например "1")
+      COOL_DOWN_MIN:  ${{ secrets.COOL_DOWN_MIN }}    # антидубль, мин. (например "180")
 
-      # публиковать от имени канала (по умолчанию = CHANNEL_ID)
-      SENDER_CHAT_ID: ${{ secrets.SENDER_CHAT_ID }}
-
-      # опционально: «будилка» Replit/лендинга и внешние ссылки для кнопок
-      KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}
-      LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}
-      LINK_PRICES:    ${{ secrets.LINK_PRICES }}
-      LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}
-      LINK_ORDER:     ${{ secrets.LINK_ORDER }}
+      # опционально — «пинг» Replit/Wake и ссылки для кнопок
+      KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}    # https://...replit.dev/ron?token=...
+      LINK_SKILLS:    ${{ secrets.LINK_SKILLS }}      # ссылка «Что умеет»
+      LINK_PRICES:    ${{ secrets.LINK_PRICES }}      # ссылка «Цены»
+      LINK_FEEDBACK:  ${{ secrets.LINK_FEEDBACK }}    # ссылка «Отзывы»
+      LINK_ORDER:     ${{ secrets.LINK_ORDER }}       # CTA (например, t.me/имя)
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0     # важно, чтобы работали pull/push
+          fetch-depth: 0          # важно для корректного pull/push
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # сам запуск постера; зависимости не нужны
       - name: Run cron poster
         run: node scripts/cron_poster.js
 
-      # смотрим, изменился ли sent.json — если да, то коммитим
-      - name: Detect changes in sent.json
-        id: changes
+      # всегда пробуем закоммитить и запушить sent.json;
+      # если «нечего коммитить/пушить» — шаг НЕ падает
+      - name: Commit & push sent.json (robust)
         run: |
-          if git diff --quiet -- sent.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Commit sent.json
-        if: steps.changes.outputs.changed == 'true'
-        run: |
+          set -e
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-          git add sent.json
-          git commit -m "chore: update sent.json (auto poster)"
-          git pull --rebase origin "$BRANCH"
-          git push origin "$BRANCH"
+
+          # Подтягиваем последние изменения (на случай гонок)
+          git pull --rebase origin "$BRANCH" || true
+
+          # Коммитим, если есть что
+          git add -A
+          git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
+
+          # Пушим, если есть что
+          git push origin "$BRANCH" || echo "Nothing to push"
