@@ -305,7 +305,8 @@ if (needDailyReport) {
   sent.__report_date = todayStr;
   writeSent(sent); // сохраним флаг
 }
-
+}
+  
 main().catch(async (e) => {
   console.error(e);
   await TG.notifyOwner(`❌ Скрипт упал: ${e.message || e}`);
