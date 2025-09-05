@@ -9,16 +9,14 @@ concurrency:
   group: telegram-auto-poster     # не допускаем параллельных запусков
   cancel-in-progress: true
 
-permissions:
-  contents: write                 # нужно, чтобы пушить sent.json обратно в репо
-
 jobs:
   post:
     runs-on: ubuntu-latest
 
-    permissions: contents: write
+    permissions:
+  contents: write                 # нужно, чтобы пушить sent.json обратно в репо
 
-    # ========= переменные окружения для scripts/cron_poster.js =========
+      # ========= переменные окружения для scripts/cron_poster.js =========
     env:
       BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}        # токен бота
       CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}       # -100XXXXXXXXXXXX (НЕ @username)
