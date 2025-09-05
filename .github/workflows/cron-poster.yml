@@ -16,12 +16,13 @@ jobs:
   post:
     runs-on: ubuntu-latest
 
+    permissions: contents: write
+
     # ========= переменные окружения для scripts/cron_poster.js =========
     env:
       BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}        # токен бота
       CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}       # -100XXXXXXXXXXXX (НЕ @username)
       OWNER_ID:       ${{ secrets.OWNER_ID }}         # кому слать отчёты в ЛС (опционально)
-
       TZ:             ${{ secrets.TZ }}               # напр. Europe/Kaliningrad
       WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}       # окно поиска постов, мин. (напр. 30)
       REPORT_HOUR:    ${{ secrets.REPORT_HOUR }}      # час вечернего отчёта (напр. 21)
@@ -62,11 +63,12 @@ jobs:
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
           # Подтягиваем последние изменения (на случай гонок)
-          git pull --rebase origin "$BRANCH" || true
+          git add sent.json || true
 
           # Коммитим, если есть что
           git add -A
           git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
 
           # Пушим, если есть что
+          git pull --rebase origin "$BRANCH" || true
           git push origin "$BRANCH" || echo "Nothing to push"
