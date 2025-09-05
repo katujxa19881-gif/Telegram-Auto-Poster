@@ -275,31 +275,35 @@ async function main() {
     await TG.notifyOwner(`✅ Опубликовано: ${posted} (окно ${WINDOW_MIN} мин, лимит ${MAX_PER_RUN}, антидубль ${COOL_DOWN} мин)`);
   }
 
-  // вечерний отчёт (по локальному TZ раннера — см. TZ в workflow)
-  const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10);
-  const todayStrUTC = new Date().toISOString().slice(0, 10);    // дата (UTC) для флага
-  const nowLocal    = new Date();
-  const needDailyReport = nowLocal.getHours() >= REPORT_HOUR && (sent.__report_date !== todayStrUTC);
+ // 2) Вечерний отчёт — строго в REPORT_HOUR:00 (минуту в минуту)
+const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10);
+const nowLocal = new Date(); // TZ берём из workflow (env TZ)
+const isReportTime =
+  nowLocal.getHours() === REPORT_HOUR &&
+  nowLocal.getMinutes() === 0; // только 21:00
 
-  if (needDailyReport) {
-    let totalToday = 0;
-    let sentToday  = 0;
-    for (const row of csv.rows) {
-      const d = (row.date || "").trim();
-      if (d === todayStrUTC) {
-        totalToday++;
-        const key = makeKey(row);
-        if (sent[key]) sentToday++;
-      }
+const todayStr = nowLocal.toISOString().slice(0, 10); // дата для флага
+
+const needDailyReport = isReportTime && (sent.__report_date !== todayStr);
+
+if (needDailyReport) {
+  let totalToday = 0, sentToday = 0;
+  for (const row of csv.rows) {
+    if ((row.date || "").trim() === todayStr) {
+      totalToday++;
+      const key = `${row.date} ${row.time} ${(row.photo_url||"")}${(row.video_url||"")}`;
+      if (sent[key]) sentToday++;
     }
-    await TG.notifyOwner(
-      `🗓 Ежедневный отчёт (${todayStrUTC}):\n` +
-      `Запланировано на сегодня: ${totalToday}\n` +
-      `Фактически опубликовано: ${sentToday}`
-    );
-    sent.__report_date = todayStrUTC;
-    writeSent(sent);
   }
+
+  await TG.notifyOwner(
+    `🗓 Ежедневный отчёт (${todayStr}):\n` +
+    `Запланировано на сегодня: ${totalToday}\n` +
+    `Фактически опубликовано: ${sentToday}`
+  );
+
+  sent.__report_date = todayStr;
+  writeSent(sent); // сохраним флаг
 }
 
 main().catch(async (e) => {
