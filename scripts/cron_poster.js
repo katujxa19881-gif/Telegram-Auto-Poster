@@ -10,6 +10,7 @@ const CHANNEL_ID = process.env.CHANNEL_ID; // -100xxxxxxxxxxx (НЕ @username!)
 const OWNER_ID = process.env.OWNER_ID || ""; // для уведомлений в ЛС
 const SENDER_CHAT_ID = process.env.SENDER_CHAT_ID || CHANNEL_ID;
 const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10); // допуск назад, минут
+const MISS_GRACE_MIN = parseInt(process.env.MISS_GRACE_MIN || "15", 10); // "пропущено" после X минут
 
 // окно поиска постов (минуты)
 const WINDOW_MIN = parseInt(
@@ -312,6 +313,73 @@ async function main() {
       `Фактически опубликовано: ${sentToday}`
     );
 
+    // ===== ПРОВЕРКА ПРОПУЩЕННЫХ ПОСТОВ НА СЕГОДНЯ (автодовыпуск) =====
+(function checkMissedAndPublishNow(){
+  const todayStr = new Date().toISOString().slice(0,10); // YYYY-MM-DD
+  const now = new Date();
+
+  // соберём сегодняшние строки, которые уже должны были выйти,
+  // прошло >= MISS_GRACE_MIN, и ещё не помечены в sent.json
+  const missed = [];
+  for (const row of csv.rows) {
+    const date = (row.date || "").trim();
+    const time = (row.time || "").trim();
+    const text = (row.text || "").trim();
+    if (date !== todayStr || !time || !text) continue;
+
+    const when = toISOLocal(date, time);
+    const key  = `${date} ${time} ${(row.photo_url||"")}${(row.video_url||"")}`;
+
+    const minutesLate = (now - when) / 60000;
+    if (minutesLate >= MISS_GRACE_MIN && !sent[key]) {
+      missed.push({ row, key });
+    }
+  }
+
+  if (missed.length === 0) return;
+
+  (async () => {
+    for (const { row, key } of missed) {
+      try {
+        await TG.notifyOwner(
+          `⚠️ Пропущено расписание: ${row.date} ${row.time}\n` +
+          `Пробую опубликовать сейчас (задержка ≥ ${MISS_GRACE_MIN} мин).`
+        );
+
+        const kb = buildInlineKeyboard(row);
+        const text = (row.text || "").trim();
+
+        if (row.photo_url) {
+          const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
+          await TG.sendPhoto(row.photo_url, cap, kb);
+          if (text.length > 1000) {
+            await sleep(500);
+            await TG.sendText(text.slice(1000), undefined);
+          }
+        } else if (row.video_url) {
+          const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
+          await TG.sendVideo(row.video_url, cap, kb);
+          if (text.length > 1000) {
+            await sleep(500);
+            await TG.sendText(text.slice(1000), undefined);
+          }
+        } else {
+          await TG.sendText(text, kb);
+        }
+
+        sent[key] = true;        // помечаем как отправлен
+        posted++;                // увеличим счётчик «по факту»
+        await TG.notifyOwner(`✅ Поздняя публикация выполнена: ${row.date} ${row.time}`);
+        await sleep(700);
+      } catch (err) {
+        await TG.notifyOwner(
+          `❌ Не удалось допубликовать пропущенный пост ${row.date} ${row.time}:\n` +
+          `${(err && err.message) || err}`
+        );
+      }
+    }
+  })();
+})();
     sent.__report_date = todayStr;
     writeSent(sent);
   }
