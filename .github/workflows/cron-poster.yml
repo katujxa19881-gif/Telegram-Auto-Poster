@@ -27,8 +27,8 @@ jobs:
       REPORT_HOUR: '21' # час суток для вечернего отчёта
       LAG_MIN: ${{ secrets.LAG_MIN }}
       MISS_GRACE_MIN: '15'
-      ANTI_DUP_MIN: ${{ secrets.ANTI_DUP_MIN }}
-      X_PER_RUN: ${{ secrets.X_PER_RUN }}
+      COOL_DOWN_MIN: ${{ secrets.COOL_DOWN_MIN }}
+      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }}
 
       # опционально (можно удалить, если не используете)
       KEEPALIVE_URL: ${{ secrets.KEEPALIVE_URL }}
