@@ -9,6 +9,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID; // -100xxxxxxxxxxx (НЕ @username!)
 const OWNER_ID = process.env.OWNER_ID || ""; // для уведомлений в ЛС
 const SENDER_CHAT_ID = process.env.SENDER_CHAT_ID || CHANNEL_ID;
+const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10); // допуск назад, минут
 
 // окно поиска постов (минуты)
 const WINDOW_MIN = parseInt(
@@ -64,7 +65,8 @@ function toISOLocal(dateStr, timeStr) {
 
 function withinWindow(when, now, windowMin) {
   const diffMin = (when - now) / 60000;
-  return diffMin >= 0 && diffMin <= windowMin;
+  // теперь берём посты, если время в диапазоне [-LAG_MIN; +windowMin]
+  return diffMin >= -LAG_MIN && diffMin <= windowMin;
 }
 
 function hashKey(row) {
