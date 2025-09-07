@@ -303,7 +303,8 @@ if (posted === 0 && DEBUG) {
     `Лимит: max_per_run=${MAX_PER_RUN}, cooldown=${COOL_DOWN_MIN} мин, anti-dup=${ANTI_DUP_MIN} мин`
   );
 }
-
+}
+  
 main().catch(async (e)=>{
   console.error(e);
   await TG.notifyOwner(`❌ Скрипт упал: ${e.message || e}`);
