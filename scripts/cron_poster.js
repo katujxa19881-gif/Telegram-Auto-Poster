@@ -8,6 +8,7 @@ import path from "path";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID; // -100xxxxxxxxxxx (НЕ @username)
 const OWNER_ID = process.env.OWNER_ID || ""; // ЛС владельцу (опционально)
+const DEBUG = (process.env.DEBUG || "").toLowerCase() === "true";
 
 const WINDOW_MIN = parseInt(process.env.WINDOW_MIN || "30", 10); // окно вперёд (мин)
 const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10); // лаг назад (мин)
@@ -287,6 +288,20 @@ async function main(){
   }
 
   writeSent(sent);
+  // мгновенное уведомление, если публиковали
+if (posted > 0) {
+  await TG.notifyOwner(`✅ Опубликовано: ${posted} (окно ${WINDOW_MIN} мин)`);
+}
+
+// если ничего не опубликовали — скажем почему (только при DEBUG)
+if (posted === 0 && DEBUG) {
+  // краткая раскладка за этот прогон
+  await TG.notifyOwner(
+    `⚠️ Публикаций нет.\n` +
+    `Сегодняшних строк: ${csv.rows.filter(r => (r.date||"").trim() === new Date().toISOString().slice(0,10)).length}\n` +
+    `Окно: +${WINDOW_MIN} / -${LAG_MIN} мин\n` +
+    `Лимит: max_per_run=${MAX_PER_RUN}, cooldown=${COOL_DOWN_MIN} мин, anti-dup=${ANTI_DUP_MIN} мин`
+  );
 }
 
 main().catch(async (e)=>{
