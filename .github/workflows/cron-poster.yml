@@ -1,19 +1,9 @@
-- name: Debug time / env / CSV
-        run: |
-          echo "== Runner clock =="
-          date
-          echo "TZ = ${TZ}"
-          echo "Node:"
-          node -e "console.log(process.versions.node)"
-          echo "== Repo root =="
-          ls -la
-          echo "== CSV head =="
-          (head -n 3 avtopost.csv || true)
+name: Telegram Auto Poster
 
-      - name: Run cron poster (verbose)
-        env:
-          DEBUG: ${{ secrets.DEBUG }}
-        run: node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # запуск каждые 5 минут
+  workflow_dispatch:         # ручной запуск
 
     # нужно, чтобы пушить sent.json обратно в репозиторий
     permissions:
@@ -31,6 +21,7 @@
       MISS_GRACE_MIN: '15'
       COOL_DOWN_MIN: ${{ secrets.COOL_DOWN_MIN }}
       MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }}
+      DEBUG: ${{ secrets.DEBUG }}
 
       # опционально (можно удалить, если не используете)
       KEEPALIVE_URL: ${{ secrets.KEEPALIVE_URL }}
@@ -53,6 +44,9 @@
       - name: Run cron poster
         run: node scripts/cron_poster.js
 
+ - name: Run cron poster (verbose)
+   run: node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
+
       # --- ОБЯЗАТЕЛЬНЫЙ БЛОК: коммитим sent.json ПОСЛЕ запуска скрипта ---
       - name: Commit & push sent.json (robust)
         run: |
@@ -63,3 +57,15 @@
           git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
           git pull --rebase origin "$BRANCH" || true
           git push origin "$BRANCH" || echo "Nothing to push"
+
+      - name: Debug time / env / CSV
+        run: |
+          echo "== Runner clock =="
+          date
+          echo "TZ = ${TZ}"
+          echo "Node:"
+          node -e "console.log(process.versions.node)"
+          echo "== Repo root =="
+          ls -la
+          echo "== CSV head =="
+          (head -n 3 avtopost.csv || true)    
