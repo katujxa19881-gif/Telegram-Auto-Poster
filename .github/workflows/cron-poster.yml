@@ -1,17 +1,19 @@
-name: Telegram Auto Poster
+- name: Debug time / env / CSV
+        run: |
+          echo "== Runner clock =="
+          date
+          echo "TZ = ${TZ}"
+          echo "Node:"
+          node -e "console.log(process.versions.node)"
+          echo "== Repo root =="
+          ls -la
+          echo "== CSV head =="
+          (head -n 3 avtopost.csv || true)
 
-on:
-  schedule:
-    - cron: "*/5 * * * *" # запуск каждые 5 минут
-  workflow_dispatch: # ручной запуск из вкладки Actions
-
-concurrency:
-  group: telegram-auto-poster
-  cancel-in-progress: true
-
-jobs:
-  post:
-    runs-on: ubuntu-latest
+      - name: Run cron poster (verbose)
+        env:
+          DEBUG: ${{ secrets.DEBUG }}
+        run: node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
 
     # нужно, чтобы пушить sent.json обратно в репозиторий
     permissions:
