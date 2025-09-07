@@ -2,28 +2,35 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # запуск каждые 5 минут
-  workflow_dispatch:         # ручной запуск
+    - cron: "*/5 * * * *" # запуск каждые 5 минут
+  workflow_dispatch: # ручной запуск
 
-    # нужно, чтобы пушить sent.json обратно в репозиторий
-    permissions:
-      contents: write
+concurrency:
+  group: telegram-auto-poster
+  cancel-in-progress: true
+
+permissions:
+  contents: write # нужно, чтобы пушить sent.json обратно в репо
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
 
     # === переменные окружения для scripts/cron_poster.js ===
     env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }} # токен бота
-      CHANNEL_ID: ${{ secrets.CHANNEL_ID }} # -100XXXXXXXXXX (ID канала)
-      OWNER_ID: ${{ secrets.OWNER_ID }} # ваш user_id для уведомлений
-      TZ: ${{ secrets.TZ }} # например: Europe/Kaliningrad
-      WINDOW_MIN: ${{ secrets.WINDOW_MIN }} # окно поиска, мин (например 30)
-      REPORT_HOUR: '21' # час суток для вечернего отчёта
-      LAG_MIN: ${{ secrets.LAG_MIN }}
-      MISS_GRACE_MIN: '15'
-      COOL_DOWN_MIN: ${{ secrets.COOL_DOWN_MIN }}
-      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }}
-      DEBUG: ${{ secrets.DEBUG }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      CHANNEL_ID: ${{ secrets.CHANNEL_ID }} # -100XXXXXXXXXX (не @username)
+      OWNER_ID: ${{ secrets.OWNER_ID }}
 
-      # опционально (можно удалить, если не используете)
+      TZ: ${{ secrets.TZ }} # напр. Europe/Kaliningrad
+      WINDOW_MIN: ${{ secrets.WINDOW_MIN }} # напр. 30
+      REPORT_HOUR: ${{ secrets.REPORT_HOUR }} # если секрета нет — в скрипте дефолт 21
+      LAG_MIN: ${{ secrets.LAG_MIN }} # напр. 10
+      ANTI_DUP_MIN: ${{ secrets.ANTI_DUP_MIN }} # напр. 180
+      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }} # напр. 1
+      COOL_DOWN_MIN: ${{ secrets.COOL_DOWN_MIN }} # напр. 15
+
+      # опционально
       KEEPALIVE_URL: ${{ secrets.KEEPALIVE_URL }}
       LINK_SKILLS: ${{ secrets.LINK_SKILLS }}
       LINK_PRICES: ${{ secrets.LINK_PRICES }}
@@ -34,38 +41,49 @@ on:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # важно для pull/push
+          fetch-depth: 0
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Run cron poster
-        run: node scripts/cron_poster.js
-
- - name: Run cron poster (verbose)
-   run: node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
-
-      # --- ОБЯЗАТЕЛЬНЫЙ БЛОК: коммитим sent.json ПОСЛЕ запуска скрипта ---
-      - name: Commit & push sent.json (robust)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-          git add sent.json || true
-          git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
-          git pull --rebase origin "$BRANCH" || true
-          git push origin "$BRANCH" || echo "Nothing to push"
-
+      # ===== Диагностика перед запуском скрипта =====
       - name: Debug time / env / CSV
         run: |
           echo "== Runner clock =="
           date
-          echo "TZ = ${TZ}"
+          echo "TZ=${TZ}"
           echo "Node:"
           node -e "console.log(process.versions.node)"
-          echo "== Repo root =="
+          echo "== Files in repo root =="
           ls -la
-          echo "== CSV head =="
-          (head -n 3 avtopost.csv || true)    
+          echo "== avtopost.csv head =="
+          (head -n 3 avtopost.csv || true)
+
+      # ===== Запуск скрипта в «болтливом» режиме =====
+      - name: Run cron poster (verbose)
+        env:
+          DEBUG: ${{ secrets.DEBUG }} # при необходимости включи секрет DEBUG=true
+        run: node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
+
+      # ===== коммитим sent.json только если он реально изменился =====
+      - name: Detect changes in sent.json
+        id: changes
+        run: |
+          if git diff --quiet -- sent.json; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit & push sent.json (robust)
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          git pull --rebase origin "$BRANCH" || true
+          git add sent.json
+          git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
+          git push origin "$BRANCH" || echo "Nothing to push"
