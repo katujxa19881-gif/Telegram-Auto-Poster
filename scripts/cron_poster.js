@@ -8,7 +8,7 @@ import path from "path";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID; // -100xxxxxxxxxxx (НЕ @username!)
 const OWNER_ID = process.env.OWNER_ID || ""; // кому слать уведомления (user_id)
-const TZ = process.env.TZ || "Europe/Moscow";
+const TZ = process.env.TZ || "Europe/Kaliningrad";
 
 const WINDOW_MIN = parseInt(process.env.WINDOW_MIN || "30", 10); // окно +N мин
 const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10); // допуск -N мин
@@ -33,7 +33,9 @@ if (!BOT_TOKEN || !CHANNEL_ID) {
 const SENDER_CHAT_ID = process.env.SENDER_CHAT_ID || CHANNEL_ID;
 
 // ============== helpers ==============
+function toInt(v, d){ const n = parseInt(v ?? "", 10); return Number.isFinite(n) ? n : d; }
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function sha1(x){ return crypto.createHash("sha1").update(String(x)).digest("hex"); }
 
 function convertDriveUrl(u){
   if (!u) return "";
