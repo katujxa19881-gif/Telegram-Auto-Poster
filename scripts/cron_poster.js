@@ -37,16 +37,38 @@ if (!BOT_TOKEN || !CHANNEL_ID) {
 // =================== Helpers ===================
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function sha1(x){
+  return crypto.createHash("sha1").update(String(x)).digest("hex");
+}
+
+// Превращаем любые Google Drive ссылки в прямые download-ссылки
 function convertDriveUrl(u) {
   if (!u) return "";
-  try {
-    const url = new URL(u.trim());
-    if (url.hostname.includes("drive.google.com")) {
-      const m = url.pathname.match(/\/file\/d\/([^/]+)/);
-      if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
-    }
-  } catch {}
-  return u.trim();
+  const s = String(u).trim();
+
+  // Уже прямая?
+  if (/drive\.google\.com\/uc\b/i.test(s) && /[?&](id|export)=/i.test(s)) return s;
+
+  let id = null;
+
+  // /file/d/<ID>/view
+  let m = s.match(/\/file\/d\/([^/]+)\//i);
+  if (m) id = m[1];
+
+  // open?id=<ID> / uc?id=<ID> / ?id=<ID>
+  if (!id) {
+    m = s.match(/[?&]id=([^&]+)/i);
+    if (m) id = m[1];
+  }
+
+  // «произвольные» drive-ссылки, где просто встречается ID
+  if (!id) {
+    m = s.match(/drive\.google\.com\/(?:file\/d\/|u\/\d\/|thumbnail\?id=)?([a-zA-Z0-9_-]{10,})/i);
+    if (m) id = m[1];
+  }
+
+  if (id) return `https://drive.google.com/uc?export=download&id=${id}`;
+  return s;
 }
 
 function toISOLocal(dateStr, timeStr) {
