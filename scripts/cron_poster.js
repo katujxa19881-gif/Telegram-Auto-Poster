@@ -242,21 +242,6 @@ const TG = {
   }
 };
 
-// =================== sent.json ===================
-const SENT_FILE = path.resolve("sent.json");
-}
-function readSent() {
-  try { return JSON.parse(fs.readFileSync(SENT_FILE, "utf8")); }
-  catch { return {}; }
-}
-function writeSent(obj) {
-  fs.writeFileSync(SENT_FILE, JSON.stringify(obj, null, 2));
-}
-function makeKey(row) {
-  // ключ поста — дата + время + тип/ссылка медиа (если есть)
-  return `${(row.date||"").trim()} ${(row.time||"").trim()} ${(row.photo_url||"")}${(row.video_url||"")}`;
-}
-
 // =================== MAIN ===================
 async function main(){
   const csvPath = path.resolve("avtopost.csv");
