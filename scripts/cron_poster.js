@@ -82,6 +82,14 @@ function withinWindow(when, now, windowMin, lagMin) {
   // разрешаем немного «в прошлое» (lag) и вперёд (window)
   return diffMin >= -Math.abs(lagMin) && diffMin <= Math.abs(windowMin);
 }
+// Читаем/пишем sent.json
+function readSent(){
+  try { return JSON.parse(fs.readFileSync(SENT_FILE, "utf8")); }
+  catch { return {}; }
+}
+function writeSent(obj){
+  fs.writeFileSync(SENT_FILE, JSON.stringify(obj, null, 2));
+}
 
 // =================== «Толстый» CSV-парсер ===================
 function detectSepFromHeader(src) {
@@ -106,7 +114,7 @@ function parseCSV(filePath) {
 
   const sep = detectSepFromHeader(s);
 
-  const recs = [];
+  const rowsRaw  = [];
   let row = [], field = "", inQ = false;
 
   for (let i = 0; i < s.length; i++) {
@@ -119,7 +127,7 @@ function parseCSV(filePath) {
     if (!inQ && ch === sep) { row.push(field); field = ""; continue; }
     if (!inQ && ch === "\n") {
       row.push(field); field = "";
-      if (row.some(c => String(c).trim() !== "")) recs.push(row);
+      if (row.some(c => String(c).trim() !== "")) rowsRaw.push(row);
       row = [];
       continue;
     }
@@ -127,12 +135,12 @@ function parseCSV(filePath) {
   }
   if (field.length > 0 || row.length > 0) {
     row.push(field);
-    if (row.some(c => String(c).trim() !== "")) recs.push(row);
+    if (row.some(c => String(c).trim() !== "")) rowsRaw.push(row);
   }
-  if (!recs.length) return { rows: [], sep };
+  if (!rowsRaw.length) return { rows: [], sep };
 
-  const headers = recs[0].map(h => String(h || "").trim());
-  const data    = recs.slice(1);
+  const headers = rowsRaw[0].map(h => String(h || "").trim());
+  const data    = rowsRaw.slice(1);
 
   const rows = [];
   for (const rec of data) {
@@ -163,8 +171,18 @@ function buildInlineKeyboard(row) {
     const u = (row[`btn${i}_url`]  || "").trim();
     if (t && u) btns.push([{ text: t, url: u }]);
   }
+  
   return btns.length ? { inline_keyboard: btns } : undefined;
 }
+// Глобальные ссылки (если нет кастомных строк)
+  if (LINK_SKILLS || LINK_PRICES || LINK_FEEDBACK || LINK_ORDER){
+    const extra = [];
+    if (LINK_SKILLS) extra.push({ text:"🧠 Что умеет?", url: LINK_SKILLS });
+    if (LINK_PRICES) extra.push({ text:"💰 Цены", url: LINK_PRICES });
+    if (LINK_FEEDBACK) extra.push({ text:"💬 Отзывы", url: LINK_FEEDBACK });
+    if (LINK_ORDER) extra.push({ text:"🛒 Заказать", url: LINK_ORDER });
+    if (extra.length) list.push(extra);
+  }
 
 // =================== Telegram API ===================
 const TG = {
@@ -239,25 +257,29 @@ function makeKey(row) {
 }
 
 // =================== MAIN ===================
-async function main() {
-  // keepalive (если задан)
-  if (KEEPALIVE_URL) {
-    try { await fetch(KEEPALIVE_URL).catch(()=>{}); } catch {}
+async function main(){
+  const csvPath = path.resolve("avtopost.csv");
+  if (!fs.existsSync(csvPath)){
+    await TG.notifyOwner("⚠️ Не найден файл avtopost.csv");
+    return;
   }
 
-  const csvPath = path.resolve("avtopost.csv");
-  const csv = parseCSV(csvPath);
+  const { rows } = parseCSV(csvPath);
   const sent = readSent();
-  const now  = new Date();
+  const now = new Date();
 
   let posted = 0;
 
   // антидубли по времени последней отправки
-  const lastSentAtISO = sent.__last_sent_at || "";
-  const lastSentAt    = lastSentAtISO ? new Date(lastSentAtISO) : null;
-  const antiDupActive = lastSentAt && ((now - lastSentAt) / 60000 < ANTI_DUP_MIN);
+  const lastTs = sent.__last_post_ts || 0;
+  if (lastTs && (now.getTime() - lastTs) < ANTI_DUP_MIN*60000){
+    // слишком рано после предыдущего поста — пропускаем весь прогон
+    return;
+  }
 
   for (const row of csv.rows) {
+    if (posted >= MAX_PER_RUN) break; 
+    
     const date = (row.date || "").trim();
     const time = (row.time || "").trim();
     const text = (row.text || "").trim();
@@ -266,11 +288,15 @@ async function main() {
     const when = toISOLocal(date, time);
     if (!withinWindow(when, now, WINDOW_MIN, LAG_MIN)) continue;
 
-    const key = makeKey(row);
+    // ключ дублирования: дата/время + sha1(медиассылок + текст)
+    const mediaPart = `${row.photo_url||""}|${row.video_url||""}`;
+    const key = `${date} ${time} ${sha1(mediaPart+"|"+text)}`;
     if (sent[key]) continue; // уже отправляли
 
-    // антидубль по «паузе»
-    if (antiDupActive) continue;
+    // антидубль: если есть запись на +-WINDOW_MIN/LAG_MIN с тем же хэшем, тоже скипаем
+    const dayPrefix = `${date} ${time.split(":")[0]}`; // грубо по часу
+    const similar = Object.keys(sent).some(k => k.includes(date) && k.endsWith(sha1(mediaPart+"|"+text)));
+    if (similar) continue;
 
     const kb = buildInlineKeyboard(row);
 
@@ -279,14 +305,14 @@ async function main() {
         const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
         await TG.sendPhoto(row.photo_url, cap, kb);
         if (text.length > 1000) {
-          await sleep(500);
+          await sleep(400);
           await TG.sendText(text.slice(1000), undefined);
         }
       } else if (row.video_url) {
         const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
         await TG.sendVideo(row.video_url, cap, kb);
         if (text.length > 1000) {
-          await sleep(500);
+          await sleep(400);
           await TG.sendText(text.slice(1000), undefined);
         }
       } else {
@@ -295,11 +321,14 @@ async function main() {
 
       sent[key] = true;
       posted++;
-      sent.__last_sent_at = new Date().toISOString(); // отметим факт отправки
+      sent.__last_post_ts = now.getTime(); // отметим время
       writeSent(sent);
 
+      // уведомление только по факту публикации
+      await TG.notifyOwner(`✅ Опубликовано: 1 (окно +${WINDOW_MIN} / -${LAG_MIN} мин; антидубль ${ANTI_DUP_MIN} мин)`);
+
       // небольшой бридж между постами
-      await sleep(700);
+      await sleep(600);// немного подышим, если вдруг MAX_PER_RUN>1
 
       // лимит «не больше N постов за прогон»
       if (posted >= X_PER_RUN) break;
@@ -315,30 +344,26 @@ async function main() {
   }
 
   // Разовый вечерний отчёт
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const nowLocal = new Date();
-  const needDailyReport = nowLocal.getHours() >= REPORT_HOUR && (sent.__report_date !== todayStr);
-
-  if (needDailyReport) {
-    let totalToday = 0;
-    let sentToday  = 0;
-
-    for (const row of csv.rows) {
-      const d = (row.date || "").trim();
-      if (d === todayStr) {
+  // Ежедневный отчёт — ровно один раз после REPORT_HOUR
+  const todayStrUTC = new Date().toISOString().slice(0,10); // дата (UTC, достаточно)
+  const nowLocal = new Date(); // в TZ раннера (см. workflow -> TZ)
+  if (nowLocal.getHours() >= REPORT_HOUR && sent.__report_date !== todayStrUTC){
+    let totalToday=0, sentToday=0;
+    for (const row of rows){
+      const d = (row.date||"").trim();
+      if (d === todayStrUTC){
         totalToday++;
-        const k = makeKey(row);
+        const media = `${row.photo_url||""}|${row.video_url||""}`;
+        const k = `${row.date} ${row.time} ${sha1(media+"|"+(row.text||"").trim())}`;
         if (sent[k]) sentToday++;
       }
     }
-
     await TG.notifyOwner(
-      `🗓 Ежедневный отчёт (${todayStr}):\n` +
-      `Запланировано на сегодня: ${totalToday}\n` +
+      `📅 Ежедневный отчёт (${todayStrUTC}):\n`+
+      `Запланировано на сегодня: ${totalToday}\n`+
       `Фактически опубликовано: ${sentToday}`
     );
-
-    sent.__report_date = todayStr;
+    sent.__report_date = todayStrUTC;
     writeSent(sent);
   }
 }
