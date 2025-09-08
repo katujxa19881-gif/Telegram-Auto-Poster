@@ -244,6 +244,7 @@ const TG = {
 
 // =================== sent.json ===================
 const SENT_FILE = path.resolve("sent.json");
+}
 function readSent() {
   try { return JSON.parse(fs.readFileSync(SENT_FILE, "utf8")); }
   catch { return {}; }
