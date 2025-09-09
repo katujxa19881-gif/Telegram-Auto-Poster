@@ -147,8 +147,21 @@ function sha1(str) {
 }
 function makeKey(row) {
   const base = `${(row.date||"").trim()} ${(row.time||"").trim()} ${(row.photo_url||"")}${(row.video_url||"")}`;
-  const txt = (row.text || "").trim();
+  const text = normalizeText(row.text);
   return `${base} #${sha1(txt.slice(0, 200))}`; // ключ стабилен, но короткий
+}
+function normalizeText(s) {
+  return String(s ?? "")
+    // нормализуем все типы переносов
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    // поддержка экранированных переносов из CSV
+    .replace(/\\n/gi, "\n") // "\n" -> перенос
+    .replace(/\/n/gi, "\n") // "/n" -> перенос (на всякий случай)
+    .replace(/\t/g, " ")
+    // убираем лишние пробелы перед переводами строк
+    .replace(/[ \u00A0]+\n/g, "\n")
+    .trim();
 }
 
 /* ===================== Telegram API ===================== */
@@ -250,7 +263,7 @@ async function main() {
 
     const date = (row.date || "").trim();
     const time = (row.time || "").trim();
-    const text = (row.text || "").trim();
+    const text = normalizeText(row.text);
     if (!date || !time || !text) continue;
 
     const when = toISOLocal(date, time);
@@ -264,14 +277,14 @@ async function main() {
 
     try {
       if (row.photo_url) {
-        const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
+        const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
         await TG.sendPhoto(row.photo_url, cap, kb);
         if (text.length > 1000) {
           await sleep(400);
           await TG.sendText(text.slice(1000), undefined);
         }
       } else if (row.video_url) {
-        const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
+        const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
         await TG.sendVideo(row.video_url, cap, kb);
         if (text.length > 1000) {
           await sleep(400);
@@ -300,7 +313,7 @@ async function main() {
 
       const date = (row.date || "").trim();
       const time = (row.time || "").trim();
-      const text = (row.text || "").trim();
+      const text = normalizeText(row.text);
       if (!date || !time || !text) continue;
 
       const when = toISOLocal(date, time);
@@ -313,14 +326,14 @@ async function main() {
         try {
           const kb = buildInlineKeyboard(row);
           if (row.photo_url) {
-            const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
+            const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
             await TG.sendPhoto(row.photo_url, cap, kb);
             if (text.length > 1000) {
               await sleep(400);
               await TG.sendText(text.slice(1000), undefined);
             }
           } else if (row.video_url) {
-            const cap = text.length > 1000 ? text.slice(0, 1000) + "…" : text;
+            const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
             await TG.sendVideo(row.video_url, cap, kb);
             if (text.length > 1000) {
               await sleep(400);
