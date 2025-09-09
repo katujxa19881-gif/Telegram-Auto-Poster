@@ -2,84 +2,66 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: "*/5 * * * *"           # запуск каждые 5 минут
-  workflow_dispatch:                # ручной запуск из вкладки Actions
+    - cron: "*/5 * * * *" # каждые 5 минут
+  workflow_dispatch: {}
 
-# не даём параллельным запускам мешать друг другу
 concurrency:
   group: telegram-auto-poster
   cancel-in-progress: true
 
 permissions:
-  contents: write                   # нужно, чтобы пушить sent.json обратно в репо
+  contents: write
 
 jobs:
   post:
     runs-on: ubuntu-latest
-
-    # === переменные окружения для scripts/cron_poster.js ===
     env:
-      BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID:     ${{ secrets.CHANNEL_ID }}      # формат: -100XXXXXXXXXXXX (НЕ @username)
-      OWNER_ID:       ${{ secrets.OWNER_ID }}
+      # обязательные
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      CHANNEL_ID: ${{ secrets.CHANNEL_ID }} # формат: -100XXXXXXXXXXXX
+      OWNER_ID: ${{ secrets.OWNER_ID }}
 
-      # таймзона раннера (важно для расчётов времени)
-      TZ:             ${{ secrets.TZ }}              # например: Europe/Kaliningrad
+      # тайминги
+      WINDOW_MIN: ${{ secrets.WINDOW_MIN }} # например: 30
+      LAG_MIN: ${{ secrets.LAG_MIN }} # например: 10
+      MISS_GRACE_MIN: ${{ secrets.MISS_GRACE_MIN }} # например: 15
+      REPORT_HOUR: ${{ secrets.REPORT_HOUR }} # например: 21
+      ANTI_DUP_MIN: ${{ secrets.ANTI_DUP_MIN }} # например: 45
+      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }} # например: 1
+      NOTIFY_MODE: ${{ secrets.NOTIFY_MODE }} # post_only | all | silent
 
-      # окно публикации
-      WINDOW_MIN:     ${{ secrets.WINDOW_MIN }}      # мин вперёд, напр. 30
-      LAG_MIN:        ${{ secrets.LAG_MIN }}         # мин назад, напр. 10
-      MISS_GRACE_MIN: ${{ secrets.MISS_GRACE_MIN }}  # допуск «чуть позже», напр. 15
-
-      # антидубли/лимиты
-      ANTI_DUP_MIN:   ${{ secrets.ANTI_DUP_MIN }}    # пауза между постами, напр. 180
-      X_PER_RUN:      ${{ secrets.X_PER_RUN }}       # максимум за прогон, обычно 1
-
-      # вечерний отчёт
-      REPORT_HOUR:    ${{ secrets.REPORT_HOUR }}     # локальный час, напр. 21
-
-      # опционально
-      SENDER_CHAT_ID: ${{ secrets.SENDER_CHAT_ID }}  # если нужно переопределить, по умолчанию = CHANNEL_ID
-      KEEPALIVE_URL:  ${{ secrets.KEEPALIVE_URL }}   # пинг Replit/лендинга (если используешь)
-      DEBUG:          ${{ secrets.DEBUG }}           # установи 'true' для подробных диагностик в ЛС
+      # если канал-комментарии привязан — публикуем ровно в канал:
+      SENDER_CHAT_ID: ${{ secrets.CHANNEL_ID }}
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0              # важно для корректного pull/push
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # Диагностика окружения и CSV (помогает быстро находить причину "тихих" прогонов)
-      - name: Debug time / env / CSV
-        run: |
-          echo "== Runner clock =="
-          date
-          echo "TZ=${TZ}"
-          echo "Node:"
-          node -e "console.log(process.versions.node)"
-          echo "== Repo root =="
-          ls -la
-          echo "== avtopost.csv (first 3 lines) =="
-          (head -n 3 avtopost.csv || true)
-
-      # Запуск постера
       - name: Run cron poster (verbose)
-        run: node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
+        run: |
+          set -e
+          node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
 
-      # Робастный коммит sent.json — всегда пробуем закоммитить и запушить,
-      # если нечего коммитить/пушить — шаг НЕ падает.
+      # (!) Надёжный пуш sent.json — без условий, с rebase и повторной попыткой
       - name: Commit & push sent.json (robust)
         run: |
           set -e
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          BRANCH="$(git rev-parse --abbrev-ref HEAD || echo main)"
+          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          if git diff --quiet -- sent.json; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+          git add sent.json
+          git commit -m "chore: update sent.json (auto)"
           git pull --rebase origin "$BRANCH" || true
-          git add sent.json || true
-          git diff --quiet -- sent.json && echo "Nothing to commit" || git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
-          git push origin "$BRANCH" || echo "Nothing to push"
+          git push origin "$BRANCH" || (git pull --rebase origin "$BRANCH" && git push origin "$BRANCH")
