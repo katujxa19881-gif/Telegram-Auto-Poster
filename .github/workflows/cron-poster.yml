@@ -2,66 +2,76 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: "*/5 * * * *" # каждые 5 минут
-  workflow_dispatch: {}
+    - cron: "*/5 * * * *" # проверяем каждые 5 минут
+  workflow_dispatch: # ручной запуск из Actions
 
 concurrency:
   group: telegram-auto-poster
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: write # нужно, чтобы пушить sent.json
 
 jobs:
   post:
     runs-on: ubuntu-latest
+
+    # === переменные окружения для scripts/cron_poster.js ===
     env:
-      # обязательные
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-      CHANNEL_ID: ${{ secrets.CHANNEL_ID }} # формат: -100XXXXXXXXXXXX
-      OWNER_ID: ${{ secrets.OWNER_ID }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }} # токен бота
+      CHANNEL_ID: ${{ secrets.CHANNEL_ID }} # -100xxxxxxxxxx (ID канала)
+      OWNER_ID: ${{ secrets.OWNER_ID }} # ваш user_id для уведомлений
 
-      # тайминги
-      WINDOW_MIN: ${{ secrets.WINDOW_MIN }} # например: 30
-      LAG_MIN: ${{ secrets.LAG_MIN }} # например: 10
-      MISS_GRACE_MIN: ${{ secrets.MISS_GRACE_MIN }} # например: 15
-      REPORT_HOUR: ${{ secrets.REPORT_HOUR }} # например: 21
-      ANTI_DUP_MIN: ${{ secrets.ANTI_DUP_MIN }} # например: 45
-      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }} # например: 1
-      NOTIFY_MODE: ${{ secrets.NOTIFY_MODE }} # post_only | all | silent
+      TZ: ${{ secrets.TZ }} # напр. Europe/Kaliningrad
+      WINDOW_MIN: ${{ secrets.WINDOW_MIN }} # окно поиска, мин (например 30)
+      LAG_MIN: ${{ secrets.LAG_MIN }} # допустимое «опоздание», мин (например 10)
+      REPORT_HOUR: ${{ secrets.REPORT_HOUR }} # час для вечернего отчёта (21)
+      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }} # не более N публикаций за один прогон (обычно 1)
 
-      # если канал-комментарии привязан — публикуем ровно в канал:
-      SENDER_CHAT_ID: ${{ secrets.CHANNEL_ID }}
+      # опционально — ссылка для кнопки «Хочу бота»
+      LINK_ORDER: ${{ secrets.LINK_ORDER }} # например https://t.me/<ваш_юзернейм>
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          persist-credentials: true
+          fetch-depth: 0 # важно для корректного pull/push
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
+      # наш скрипт использует csv-parse и node-fetch — поставим их на лету
+      - name: Install lightweight deps
+        run: |
+          npm i csv-parse@^5 node-fetch@^3
+
+      # (необязательно) быстрый вывод времени и TZ для проверки
+      - name: Debug time / env
+        run: |
+          echo "TZ=$TZ"
+          date
+          node -e "console.log('Node', process.version)"
+
       - name: Run cron poster (verbose)
         run: |
           set -e
-          node --unhandled-rejections=strict --trace-uncaught scripts/cron_poster.js
+          node scripts/cron_poster.js
 
-      # (!) Надёжный пуш sent.json — без условий, с rebase и повторной попыткой
+      # Надёжно коммитим sent.json обратно (если менялся)
       - name: Commit & push sent.json (robust)
         run: |
-          set -e
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          # Если файла нет — создадим пустой объект
+          [ -f sent.json ] || echo "{}" > sent.json
           if git diff --quiet -- sent.json; then
-            echo "Nothing to commit"
-            exit 0
+            echo "No changes in sent.json"
+          else
+            git add sent.json
+            git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
+            git pull --rebase origin "$BRANCH" || true
+            git push origin "$BRANCH" || echo "Nothing to push"
           fi
-          git add sent.json
-          git commit -m "chore: update sent.json (auto)"
-          git pull --rebase origin "$BRANCH" || true
-          git push origin "$BRANCH" || (git pull --rebase origin "$BRANCH" && git push origin "$BRANCH")
