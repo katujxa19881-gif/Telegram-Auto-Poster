@@ -4,180 +4,149 @@
 import fs from "fs";
 import path from "path";
 
-/* ===================== ENV ===================== */
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID; // строго -100XXXXXXXX
-const OWNER_ID = process.env.OWNER_ID || ""; // опционально
-const WINDOW_MIN = parseInt(process.env.WINDOW_MIN || "30", 10); // окно +мин
-const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10); // окно -мин
-const MISS_GRACE = parseInt(process.env.MISS_GRACE_MIN || "15", 10); // «догоним после»
-const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10);
-const ANTI_DUP_MIN= parseInt(process.env.ANTI_DUP_MIN || "15", 10);
-const MAX_PER_RUN = parseInt(process.env.MAX_PER_RUN || "1", 10);
-const NOTIFY_MODE = (process.env.NOTIFY_MODE || "post_only"); // 'post_only' | 'all' | 'silent'
+// ============= ENV =================
+const BOT_TOKEN   = process.env.BOT_TOKEN;
+const CHANNEL_ID  = process.env.CHANNEL_ID;            // -100xxxxxxxxxxx
+const OWNER_ID    = process.env.OWNER_ID || "";        // user_id для уведомлений
+const TZ          = process.env.TZ || "UTC";           // для логики времени раннера
+const WINDOW_MIN  = parseInt(process.env.WINDOW_MIN || "30", 10); // +сколько минут после планового времени ловим пост
+const LAG_MIN     = parseInt(process.env.LAG_MIN     || "10", 10); // -сколько минут ДО времени тоже считаем окном
+const ANTI_DUP_MIN= parseInt(process.env.ANTI_DUP_MIN|| "180",10); // не постить одинаковое в пределах Х минут
+const MAX_PER_RUN = parseInt(process.env.MAX_PER_RUN || "1", 10);  // не больше N постов за один прогон
+const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10); // час (локальный TZ раннера) для отчёта
+
+// публикуем от имени канала — это важно для появления кнопки "Обсудить"
+const SENDER_CHAT_ID = process.env.SENDER_CHAT_ID || CHANNEL_ID;
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
   console.error("Missing BOT_TOKEN or CHANNEL_ID");
   process.exit(1);
 }
 
-// публикуем от имени канала (можно переопределить секретом SENDER_CHAT_ID)
-const SENDER_CHAT_ID = process.env.SENDER_CHAT_ID || CHANNEL_ID;
+// ============= Утилиты =============
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-/* ===================== Утилиты ===================== */
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-function ymdLocal(d = new Date()) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function toISOLocal(dateStr, timeStr) {
-  const [Y, M, D] = (dateStr || "").split("-").map(Number);
-  const [h, m] = (timeStr || "").split(":").map(Number);
-  return new Date(Y, (M || 1) - 1, D, h || 0, m || 0, 0, 0); // локальная зона
-}
-
-// dt в окне [now - lagMin; now + windowMin]
-function withinWindow(dt, now, windowMin, lagMin) {
-  const diffMin = (dt.getTime() - now.getTime()) / 60000;
-  return diffMin >= -lagMin && diffMin <= windowMin;
-}
-
-function detectSepFromHeader(src) {
-  let inQ = false, commas = 0, semis = 0;
-  for (let i = 0; i < src.length; i++) {
-    const ch = src[i];
-    if (ch === '"') {
-      if (inQ && src[i + 1] === '"') { i++; }
-      else inQ = !inQ;
-    } else if (!inQ && ch === "\n") break;
-    else if (!inQ && ch === ",") commas++;
-    else if (!inQ && ch === ";") semis++;
-  }
-  return semis > commas ? ";" : ",";
-}
-
-function convertDriveUrl(u) {
+// Google Drive «view» -> прямой «uc?export=download&id=...»
+function convertDriveUrl(u){
   if (!u) return "";
-  try {
+  try{
     const url = new URL(u.trim());
-    if (url.hostname.includes("drive.google.com")) {
-      // /file/d/<id>/view → uc?id=<id>
+    if (url.hostname.includes("drive.google.com")){
       const m = url.pathname.match(/\/file\/d\/([^/]+)/);
       if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
     }
-  } catch (_) {}
+  }catch(_){}
   return u.trim();
 }
 
-function parseCSV(filePath) {
+function toLocalDate(dateStr, timeStr){
+  // date: YYYY-MM-DD, time: HH:MM
+  const [Y,M,D] = (dateStr||"").split("-").map(Number);
+  const [h,m]   = (timeStr||"").split(":").map(Number);
+  return new Date(Y, (M||1)-1, D||1, h||0, m||0, 0, 0); // локальная зона раннера (TZ задаётся в workflow)
+}
+
+// в окне [-LAG_MIN; +WINDOW_MIN] от now?
+function withinWindow(when, now, wPlusMin, wMinusMin){
+  const diffMin = (when.getTime() - now.getTime())/60000;
+  return diffMin <= wPlusMin && diffMin >= -wMinusMin;
+}
+
+// ключ для де-дубля
+function makeKey(row){
+  const date = (row.date||"").trim();
+  const time = (row.time||"").trim();
+  const media = (row.photo_url || row.video_url || "").trim();
+  // на случай длинных текстов усечём для ключа
+  const text = (row.text||"").trim().slice(0, 80);
+  return `${date} ${time} | ${media} | ${text}`;
+}
+
+// ============= Толстый CSV-парсер =============
+function detectSepFromHeader(src){
+  let inQ=false, c=0, s=0;
+  for (let i=0;i<src.length;i++){
+    const ch=src[i];
+    if (ch === '"'){
+      if (inQ && src[i+1]==='"'){ i++; }
+      else inQ = !inQ;
+    } else if (!inQ && ch === ",") c++;
+    else if (!inQ && ch === ";")   s++;
+    else if (!inQ && ch === "\n")  break;
+  }
+  return s>c ? ";" : ",";
+}
+
+function parseCSV(filePath){
   let s = fs.readFileSync(filePath, "utf8");
-  s = s.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  s = s.replace(/^\uFEFF/, "").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
   if (!s.trim()) return { rows: [], sep: "," };
 
   const sep = detectSepFromHeader(s);
   const records = [];
-  let row = [], field = "", inQ = false;
+  let row=[], field="", inQ=false;
 
-  for (let i = 0; i < s.length; i++) {
+  for (let i=0;i<s.length;i++){
     const ch = s[i];
-    if (ch === '"') {
-      if (inQ && s[i + 1] === '"') { field += '"'; i++; }
+    if (ch === '"'){
+      if (inQ && s[i+1]==='"'){ field+='"'; i++; }
       else inQ = !inQ;
       continue;
     }
-    if (!inQ && ch === sep) { row.push(field); field = ""; continue; }
-    if (!inQ && ch === "\n") {
-      row.push(field); field = "";
-      if (row.some(c => String(c).trim() !== "")) records.push(row);
-      row = [];
-      continue;
+    if (!inQ && ch === sep){ row.push(field); field=""; continue; }
+    if (!inQ && ch === "\n"){
+      row.push(field); field="";
+      if (row.some(x => String(x).trim()!== "")) records.push(row);
+      row=[]; continue;
     }
     field += ch;
   }
-  if (field.length > 0 || row.length > 0) {
+  if (field.length>0 || row.length>0){
     row.push(field);
-    if (row.some(c => String(c).trim() !== "")) records.push(row);
+    if (row.some(x => String(x).trim()!== "")) records.push(row);
   }
   if (!records.length) return { rows: [], sep };
 
-  const headers = records[0].map(h => String(h || "").trim());
+  const headers = records[0].map(h => String(h||"").trim());
   const data = records.slice(1);
 
-  const rows = [];
-  for (const rec of data) {
-    const obj = {};
-    for (let i = 0; i < headers.length; i++) {
-      obj[headers[i]] = (rec[i] ?? "").toString();
-    }
+  const out=[];
+  for (const rec of data){
+    const obj={};
+    headers.forEach((h,idx)=> obj[h] = (rec[idx] ?? "").toString());
+
+    // алиасы
     if (!obj.photo_url && obj.photo) obj.photo_url = obj.photo;
     if (!obj.video_url && obj.video) obj.video_url = obj.video;
 
+    // нормализуем
     if (obj.photo_url) obj.photo_url = convertDriveUrl(obj.photo_url);
     if (obj.video_url) obj.video_url = convertDriveUrl(obj.video_url);
-    if (obj.text) obj.text = obj.text.replace(/\\n/g, "\n");
+    if (obj.text)      obj.text      = obj.text.replace(/\\n/g, "\n");
 
-    const meaningful = Object.values(obj).some(v => String(v).trim() !== "");
-    if (meaningful) rows.push(obj);
+    const meaningful = Object.values(obj).some(v => String(v).trim()!=="");
+    if (meaningful) out.push(obj);
   }
-  return { rows, sep };
+  return { rows: out, sep };
 }
 
-function buildInlineKeyboard(row) {
-  const kb = [];
-  for (let i = 1; i <= 4; i++) {
-    const t = (row[`btn${i}_text`] || "").trim();
-    const u = (row[`btn${i}_url`] || "").trim();
-    if (t && u) kb.push([{ text: t, url: u }]);
-  }
-  return kb.length ? { inline_keyboard: kb } : undefined;
-}
-
-function sha1(str) {
-  // простенький, чтобы сделать ключ из текста
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (h << 5) - h + str.charCodeAt(i);
-    h |= 0;
-  }
-  return String(h);
-}
-function makeKey(row) {
-  const base = `${(row.date||"").trim()} ${(row.time||"").trim()} ${(row.photo_url||"")}${(row.video_url||"")}`;
-  const text = normalizeText(row.text);
-  return `${base} #${sha1(txt.slice(0, 200))}`; // ключ стабилен, но короткий
-}
-function normalizeText(s) {
-  return String(s ?? "")
-    // нормализуем все типы переносов
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    // поддержка экранированных переносов из CSV
-    .replace(/\\n/gi, "\n") // "\n" -> перенос
-    .replace(/\/n/gi, "\n") // "/n" -> перенос (на всякий случай)
-    .replace(/\t/g, " ")
-    // убираем лишние пробелы перед переводами строк
-    .replace(/[ \u00A0]+\n/g, "\n")
-    .trim();
-}
-
-/* ===================== Telegram API ===================== */
+// ============= Telegram API =============
 const TG = {
-  async call(method, payload) {
+  async call(method, payload){
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type":"application/json" },
       body: JSON.stringify(payload)
     });
-    const j = await res.json().catch(() => ({}));
-    if (!j.ok) throw new Error(`${method} failed: ${res.status} ${res.statusText} ${JSON.stringify(j)}`);
+    const j = await res.json().catch(()=> ({}));
+    if (!j.ok){
+      throw new Error(`${method} failed: ${res.status} ${res.statusText} ${JSON.stringify(j)}`);
+    }
     return j.result;
   },
-  async sendText(text, reply_markup) {
+
+  async sendText(text, reply_markup){
     return this.call("sendMessage", {
       chat_id: CHANNEL_ID,
       sender_chat_id: SENDER_CHAT_ID,
@@ -188,7 +157,8 @@ const TG = {
       reply_markup
     });
   },
-  async sendPhoto(photo, caption, reply_markup) {
+
+  async sendPhoto(photo, caption, reply_markup){
     return this.call("sendPhoto", {
       chat_id: CHANNEL_ID,
       sender_chat_id: SENDER_CHAT_ID,
@@ -199,7 +169,8 @@ const TG = {
       reply_markup
     });
   },
-  async sendVideo(video, caption, reply_markup) {
+
+  async sendVideo(video, caption, reply_markup){
     return this.call("sendVideo", {
       chat_id: CHANNEL_ID,
       sender_chat_id: SENDER_CHAT_ID,
@@ -210,198 +181,142 @@ const TG = {
       reply_markup
     });
   },
-  async notifyOwner(text) {
+
+  async notifyOwner(text){
     if (!OWNER_ID) return;
-    try { await this.call("sendMessage", { chat_id: OWNER_ID, text }); } catch {}
+    try{ await this.call("sendMessage", { chat_id: OWNER_ID, text }); }catch(_){}
   }
 };
 
-// централизованный фильтр уведомлений
-async function notify(kind, text) {
-  // kind: 'post' | 'report' | 'error'
-  if (NOTIFY_MODE === "silent" && kind !== "error") return;
-  if (NOTIFY_MODE === "post_only" && kind !== "post" && kind !== "error") return;
-  await TG.notifyOwner(text);
+// ============= Кнопки (из CSV) =============
+function buildInlineKeyboard(row){
+  const btns=[];
+  for (let i=1;i<=4;i++){
+    const t=(row[`btn${i}_text`]||"").trim();
+    const u=(row[`btn${i}_url`] ||"").trim();
+    if (t && u) btns.push([{ text:t, url:u }]);
+  }
+  return btns.length ? { inline_keyboard: btns } : undefined;
 }
 
-/* ===================== sent.json ===================== */
+// ============= Лог отправленного =============
 const SENT_FILE = path.resolve("sent.json");
-function readSent() {
-  try { return JSON.parse(fs.readFileSync(SENT_FILE, "utf8")); }
-  catch { return {}; }
+
+// формат: массив объектов { key, ts }
+function readSent(){
+  try{
+    const raw = fs.readFileSync(SENT_FILE, "utf8").trim();
+    if (!raw) return [];
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : [];
+  }catch(_){ return []; }
 }
-function writeSent(x) {
-  fs.writeFileSync(SENT_FILE, JSON.stringify(x, null, 2));
+function writeSent(arr){
+  fs.writeFileSync(SENT_FILE, JSON.stringify(arr, null, 2));
 }
 
-/* ===================== MAIN ===================== */
-async function main() {
+function sentHasRecentDuplicate(sentArr, key, now, antiDupMin){
+  const since = now.getTime() - antiDupMin*60*1000;
+  return sentArr.some(it => it.key === key && it.ts >= since);
+}
+
+// ============= MAIN =============
+async function main(){
+  // чтобы локальный Date шёл в нужной зоне (для логов)
+  process.env.TZ = TZ;
+
   const csvPath = path.resolve("avtopost.csv");
-  const csv = parseCSV(csvPath);
-  const sent = readSent();
-
-  const now = new Date();
-  const todayLocal = ymdLocal(now);
-
-  // антидубль между прогонами: не чаще раза в ANTI_DUP_MIN
-  const lastAt = sent.__last_post_at ? new Date(sent.__last_post_at) : null;
-  if (lastAt) {
-    const dtMin = (now.getTime() - lastAt.getTime()) / 60000;
-    if (dtMin < ANTI_DUP_MIN) {
-      // слишком рано после предыдущей публикации — выходим молча
-      // (ничего не публиковали => уведомлений не будет)
-      return finishReports(csv, sent, now, todayLocal);
-    }
+  if (!fs.existsSync(csvPath)){
+    await TG.notifyOwner("⚠️ Не найден avtopost.csv");
+    return;
   }
 
-  let posted = 0;
-  let attempted = 0;
+  const { rows } = parseCSV(csvPath);
+  const sentArr  = readSent();
+  const now      = new Date();
 
-  // 1) обычная публикация в окно [-LAG_MIN ; +WINDOW_MIN]
-  for (const row of csv.rows) {
+  let posted = 0;
+
+  for (const row of rows){
     if (posted >= MAX_PER_RUN) break;
 
-    const date = (row.date || "").trim();
-    const time = (row.time || "").trim();
-    const text = normalizeText(row.text);
+    const date = (row.date||"").trim();
+    const time = (row.time||"").trim();
+    let   text = (row.text||"").trim();
+
     if (!date || !time || !text) continue;
 
-    const when = toISOLocal(date, time);
+    const when = toLocalDate(date, time);
     if (!withinWindow(when, now, WINDOW_MIN, LAG_MIN)) continue;
 
     const key = makeKey(row);
-    if (sent[key]) continue; // уже отправляли
+    if (sentHasRecentDuplicate(sentArr, key, now, ANTI_DUP_MIN)){
+      // недавно уже такое публиковали — пропускаем
+      continue;
+    }
 
-    attempted++;
+    // кнопки из CSV
     const kb = buildInlineKeyboard(row);
 
-    try {
-      if (row.photo_url) {
-        const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
+    try{
+      if (row.photo_url){
+        const cap = text.length>1000 ? text.slice(0,1000)+"…" : text;
         await TG.sendPhoto(row.photo_url, cap, kb);
-        if (text.length > 1000) {
-          await sleep(400);
+        if (text.length > 1000){
+          await sleep(500);
           await TG.sendText(text.slice(1000), undefined);
         }
-      } else if (row.video_url) {
-        const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
+      } else if (row.video_url){
+        const cap = text.length>1000 ? text.slice(0,1000)+"…" : text;
         await TG.sendVideo(row.video_url, cap, kb);
-        if (text.length > 1000) {
-          await sleep(400);
+        if (text.length > 1000){
+          await sleep(500);
           await TG.sendText(text.slice(1000), undefined);
         }
       } else {
         await TG.sendText(text, kb);
       }
 
-      sent[key] = true;
+      // записываем факт публикации
+      sentArr.push({ key, ts: Date.now() });
+      writeSent(sentArr);
+
       posted++;
-      sent.__last_post_at = new Date().toISOString();
-      writeSent(sent);
-
-      await notify("post", `✅ Опубликовано: 1 (окно +${WINDOW_MIN} / −${LAG_MIN} мин; авто-доп. после ${MISS_GRACE} мин)`);
-      await sleep(600);
-    } catch (err) {
-      await notify("error", `❌ Ошибка публикации: ${date} ${time}\n${(err && err.message) || err}`);
+      await TG.notifyOwner(`✅ Опубликовано: 1 (окно +${WINDOW_MIN}/-${LAG_MIN} мин; лимит ${MAX_PER_RUN}, антидубль ${ANTI_DUP_MIN} мин)`);
+      await sleep(700);
+    }catch(err){
+      await TG.notifyOwner(`❌ Ошибка публикации: ${date} ${time}\n${(err && err.message) || err}`);
     }
   }
 
-  // 2) автодогон «проспавших» постов (если ничего не опубликовали сейчас)
-  if (posted === 0) {
-    for (const row of csv.rows) {
-      if (posted >= MAX_PER_RUN) break;
+  // Вечерний отчёт 1 раз в сутки
+  const todayISO = new Date().toISOString().slice(0,10); // только дата
+  // флажок храним в sent.json как спец-запись
+  const hadReport = sentArr.some(x => x.key === `__report:${todayISO}`);
 
-      const date = (row.date || "").trim();
-      const time = (row.time || "").trim();
-      const text = normalizeText(row.text);
-      if (!date || !time || !text) continue;
-
-      const when = toISOLocal(date, time);
-      const minsAgo = (now.getTime() - when.getTime()) / 60000;
-
-      if (minsAgo >= MISS_GRACE && minsAgo <= WINDOW_MIN + LAG_MIN + 120 /* страховка */) {
-        const key = makeKey(row);
-        if (sent[key]) continue;
-
-                const kb = buildInlineKeyboard(row);
-         try {
-  // ограничение длины подписи для фото/видео
-  const textLen = text.length;
-  const cap = textLen > 1000 ? text.slice(0, 1000) + "…" : text;
-
-  if (row.photo_url) {
-    await TG.sendPhoto(row.photo_url, cap, kb);
-    if (textLen > 1000) {
-      await sleep(500);
-      await TG.sendText(text.slice(1000), undefined);
-    }
-  } else if (row.video_url) {
-    await TG.sendVideo(row.video_url, cap, kb);
-    if (textLen > 1000) {
-      await sleep(500);
-      await TG.sendText(text.slice(1000), undefined);
-    }
-  } else {
-    await TG.sendText(text, kb);
-  }
-
-  sent[key] = true;
-  posted++;
-  await sleep(700);
-
-          sent.__last_post_at = new Date().toISOString();
-          writeSent(sent);
-
-          await notify("post", `✅ Догон по расписанию: 1 (просрочка ≥ ${MISS_GRACE} мин)`);
-          await sleep(600);
-        } catch (err) {
-  await TG.notifyOwner(`❌ Ошибка публикации: ${date} ${time}\n${(err && err.message) || err}`);
-}
-      }
-    }
-  }
-
-  // 3) дневной отчёт (один раз после REPORT_HOUR, локальная дата)
-  await finishReports(csv, sent, now, todayLocal);
-}
-
-async function finishReports(csv, sent, now, todayLocal) {
-  // отчёт шлём один раз после REPORT_HOUR
   const nowLocal = new Date();
-  const todayStr = todayLocal; // уже локальная дата
-
-  const needDaily = nowLocal.getHours() >= REPORT_HOUR &&
-                    sent.__report_date !== todayStr;
-
-  if (needDaily) {
-    let totalToday = 0, sentToday = 0;
-
-    for (const row of csv.rows) {
-      const d = (row.date || "").trim();
-      if (d === todayStr) {
+  if (!hadReport && nowLocal.getHours() >= REPORT_HOUR){
+    // считаем план/факт за сегодня
+    let totalToday=0, factToday=0;
+    for (const row of rows){
+      if ((row.date||"").trim() === todayISO){
         totalToday++;
-        const key = makeKey(row);
-        if (sent[key]) sentToday++;
+        const k = makeKey(row);
+        if (sentArr.some(x => x.key === k)) factToday++;
       }
     }
-
-    // не шумим, если и план, и факт нули
-    if (totalToday > 0 || sentToday > 0) {
-      await notify("report",
-        `📅 Ежедневный отчёт (${todayStr}):\n` +
-        `Запланировано на сегодня: ${totalToday}\n` +
-        `Фактически опубликовано: ${sentToday}`
-      );
-    }
-
-    sent.__report_date = todayStr;
-    writeSent(sent);
+    await TG.notifyOwner(
+      `📅 Ежедневный отчёт (${todayISO}):\n`+
+      `Запланировано на сегодня: ${totalToday}\n`+
+      `Фактически опубликовано: ${factToday}`
+    );
+    sentArr.push({ key:`__report:${todayISO}`, ts: Date.now() });
+    writeSent(sentArr);
   }
 }
 
-/* ===================== run ===================== */
-main().catch(async (e) => {
+main().catch(async (e)=>{
   console.error(e);
-  await notify("error", `❌ Скрипт упал: ${e.message || e}`);
+  await TG.notifyOwner(`❌ Скрипт упал: ${e && e.message ? e.message : String(e)}`);
   process.exit(1);
 });
