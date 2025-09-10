@@ -323,36 +323,40 @@ async function main() {
         const key = makeKey(row);
         if (sent[key]) continue;
 
-        try {
-          const kb = buildInlineKeyboard(row);
-          if (row.photo_url) {
-            const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
-            await TG.sendPhoto(row.photo_url, cap, kb);
-            if (text.length > 1000) {
-              await sleep(400);
-              await TG.sendText(text.slice(1000), undefined);
-            }
-          } else if (row.video_url) {
-            const cap = full.length > 1000 ? full.slice(0, 1000) + "…" : full;
-            await TG.sendVideo(row.video_url, cap, kb);
-            if (text.length > 1000) {
-              await sleep(400);
-              await TG.sendText(text.slice(1000), undefined);
-            }
-          } else {
-            await TG.sendText(text, kb);
-          }
+                const kb = buildInlineKeyboard(row);
+         try {
+  // ограничение длины подписи для фото/видео
+  const textLen = text.length;
+  const cap = textLen > 1000 ? text.slice(0, 1000) + "…" : text;
 
-          sent[key] = true;
-          posted++;
+  if (row.photo_url) {
+    await TG.sendPhoto(row.photo_url, cap, kb);
+    if (textLen > 1000) {
+      await sleep(500);
+      await TG.sendText(text.slice(1000), undefined);
+    }
+  } else if (row.video_url) {
+    await TG.sendVideo(row.video_url, cap, kb);
+    if (textLen > 1000) {
+      await sleep(500);
+      await TG.sendText(text.slice(1000), undefined);
+    }
+  } else {
+    await TG.sendText(text, kb);
+  }
+
+  sent[key] = true;
+  posted++;
+  await sleep(700);
+
           sent.__last_post_at = new Date().toISOString();
           writeSent(sent);
 
           await notify("post", `✅ Догон по расписанию: 1 (просрочка ≥ ${MISS_GRACE} мин)`);
           await sleep(600);
         } catch (err) {
-          await notify("error", `❌ Ошибка автогона: ${date} ${time}\n${(err && err.message) || err}`);
-        }
+  await TG.notifyOwner(`❌ Ошибка публикации: ${date} ${time}\n${(err && err.message) || err}`);
+}
       }
     }
   }
