@@ -1,7 +1,6 @@
 // scripts/cron_poster.js
 import fs from "fs";
 import path from "path";
-import fetch from "node-fetch";
 import { parse as csvParse } from "csv-parse/sync";
 
 // === настройки окружения ===
