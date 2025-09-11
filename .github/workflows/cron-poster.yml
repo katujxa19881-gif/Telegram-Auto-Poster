@@ -44,8 +44,7 @@ jobs:
 
       # наш скрипт использует csv-parse и node-fetch — поставим их на лету
       - name: Install lightweight deps
-        run: |
-          npm i csv-parse@^5 node-fetch@^3
+        run: npm i csv-parse@^5 --no-audit --no-fund
 
       # (необязательно) быстрый вывод времени и TZ для проверки
       - name: Debug time / env
