@@ -1,144 +1,123 @@
 // scripts/cron_poster.js
 import fs from "fs";
 import path from "path";
-import { parse as csvParse } from "csv-parse/sync";
+import { parse } from "csv-parse/sync"; // ✅ правильный импорт
+import fetch from "node-fetch";
 
-// === настройки окружения ===
+// === Чтение CSV ===
+const csvPath = path.join(process.cwd(), "avtopost.csv");
+if (!fs.existsSync(csvPath)) {
+  console.error("Файл avtopost.csv не найден!");
+  process.exit(1);
+}
+const csvData = fs.readFileSync(csvPath, "utf-8");
+
+const rows = parse(csvData, {
+  columns: true,
+  skip_empty_lines: true,
+});
+
+// === Telegram API ===
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const OWNER_ID = process.env.OWNER_ID;
 
-const TZ = process.env.TZ || "Europe/Kaliningrad";
-const WINDOW_MIN = parseInt(process.env.WINDOW_MIN || "30", 10);
-const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10);
-const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10);
-
-const MAX_PER_RUN = parseInt(process.env.MAX_PER_RUN || "1", 10);
-const ANTI_DUP_MIN = parseInt(process.env.ANTI_DUP_MIN || "180", 10);
-const MISS_GRACE_MIN = parseInt(process.env.MISS_GRACE_MIN || "15", 10);
-
-// === файлы ===
-const CSV_FILE = path.join(process.cwd(), "avtopost.csv");
-const SENT_FILE = path.join(process.cwd(), "sent.json");
-
-// === вспомогательные ===
-function readCSV() {
-  const raw = fs.readFileSync(CSV_FILE, "utf8");
-  const rows = csvParse.parse(raw, { columns: true, skip_empty_lines: true });
-  return rows.map((obj) => {
-    if (obj.text)
-      obj.text = obj.text
-        // заменяем \n
-        .replace(/\\n/g, "\n")
-        // заменяем /n
-        .replace(/\/n/g, "\n");
-    return obj;
-  });
+if (!BOT_TOKEN || !CHANNEL_ID) {
+  console.error("Нет BOT_TOKEN или CHANNEL_ID в переменных окружения!");
+  process.exit(1);
 }
 
-function readSent() {
-  if (!fs.existsSync(SENT_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(SENT_FILE, "utf8"));
-  } catch {
-    return {};
-  }
+const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+
+// === sent.json для антидублей ===
+const sentFile = path.join(process.cwd(), "sent.json");
+let sent = {};
+if (fs.existsSync(sentFile)) {
+  sent = JSON.parse(fs.readFileSync(sentFile, "utf-8"));
 }
 
-function writeSent(sent) {
-  fs.writeFileSync(SENT_FILE, JSON.stringify(sent, null, 2));
+// === Помощники ===
+function sleep(ms) {
+  return new Promise((res) => setTimeout(res, ms));
 }
 
-function toISODateTime(dateStr, timeStr) {
-  return new Date(`${dateStr}T${timeStr}:00.000Z`);
-}
-
-function withinWindow(when, now) {
-  const diffMin = (when - now) / 60000;
-  return diffMin >= -LAG_MIN && diffMin <= WINDOW_MIN;
-}
-
-// === Telegram API ===
-async function tg(method, body) {
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(`${method} failed: ${JSON.stringify(data)}`);
-  return data;
-}
-
-async function sendToChannel(row) {
-  const text = row.text || "";
-  const kb = {
+function buildInlineKeyboard(row) {
+  return {
     inline_keyboard: [
       [
         {
-          text: "🧠 Хочу бота",
-          url: process.env.LINK_ORDER || "https://t.me/" + OWNER_ID,
+          text: "📩 Хочу бота",
+          url: process.env.LINK_ORDER || "https://t.me/Ka_terina8",
         },
       ],
     ],
   };
-
-  if (row.photo_url) {
-    await tg("sendPhoto", {
-      chat_id: CHANNEL_ID,
-      photo: row.photo_url,
-      caption: text,
-      reply_markup: kb,
-    });
-  } else if (row.video_url) {
-    await tg("sendVideo", {
-      chat_id: CHANNEL_ID,
-      video: row.video_url,
-      caption: text,
-      reply_markup: kb,
-    });
-  } else {
-    await tg("sendMessage", {
-      chat_id: CHANNEL_ID,
-      text: text,
-      reply_markup: kb,
-    });
-  }
 }
 
-// === основная логика ===
-async function main() {
-  const csv = readCSV();
-  const sent = readSent();
+// === Основная логика публикации ===
+let due = 0;
+const MAX_PER_RUN = parseInt(process.env.MAX_PER_RUN || "1", 10);
 
-  const now = new Date();
-  let published = 0;
+for (const row of rows) {
+  if (due >= MAX_PER_RUN) break;
 
-  for (const row of csv) {
-    if (!row.date || !row.time) continue;
+  const date = (row.date || "").trim();
+  const time = (row.time || "").trim();
+  const text = (row.text || "").replace(/\\n/g, "\n").trim(); // ✅ норм переносы строк
+  const photo = (row.photo || "").trim();
 
-    const when = toISODateTime(row.date, row.time);
-    if (!withinWindow(when, now)) continue;
+  if (!date || !time || !text) continue;
 
-    const key = `${row.date}_${row.time}`;
-    if (sent[key]) continue;
+  const key = `${date}_${time}_${text.slice(0, 30)}`;
+  if (sent[key]) continue;
 
-    // публикуем
-    await sendToChannel(row);
+  const kb = buildInlineKeyboard(row);
+
+  try {
+    if (photo) {
+      // если есть картинка
+      await fetch(`${TG_API}/sendPhoto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: CHANNEL_ID,
+          photo,
+          caption: text,
+          parse_mode: "HTML",
+          reply_markup: kb,
+        }),
+      });
+    } else {
+      // только текст
+      await fetch(`${TG_API}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: CHANNEL_ID,
+          text,
+          parse_mode: "HTML",
+          reply_markup: kb,
+        }),
+      });
+    }
 
     sent[key] = true;
-    writeSent(sent);
-
-    published++;
-    if (published >= MAX_PER_RUN) break;
+    fs.writeFileSync(sentFile, JSON.stringify(sent, null, 2));
+    due++;
+    await sleep(1500);
+  } catch (err) {
+    console.error("Ошибка публикации:", err.message);
+    if (OWNER_ID) {
+      await fetch(`${TG_API}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: OWNER_ID,
+          text: `❌ Ошибка публикации: ${err.message}`,
+        }),
+      });
+    }
   }
 }
 
-main().catch(async (e) => {
-  console.error(e);
-  await tg("sendMessage", {
-    chat_id: OWNER_ID,
-    text: `❌ Скрипт упал: ${e.message}`,
-  });
-  process.exit(1);
-});
+console.log(`Завершено. Опубликовано: ${due}`);
