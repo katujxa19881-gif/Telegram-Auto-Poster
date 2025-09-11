@@ -8,7 +8,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const OWNER_ID = process.env.OWNER_ID;
 
-const TZ = process.env.TZ || "Europe/Moscow";
+const TZ = process.env.TZ || "Europe/Kaliningrad";
 const WINDOW_MIN = parseInt(process.env.WINDOW_MIN || "30", 10);
 const LAG_MIN = parseInt(process.env.LAG_MIN || "10", 10);
 const REPORT_HOUR = parseInt(process.env.REPORT_HOUR || "21", 10);
@@ -18,7 +18,7 @@ const ANTI_DUP_MIN = parseInt(process.env.ANTI_DUP_MIN || "180", 10);
 const MISS_GRACE_MIN = parseInt(process.env.MISS_GRACE_MIN || "15", 10);
 
 // === файлы ===
-const CSV_FILE = path.join(process.cwd(), "posts.csv");
+const CSV_FILE = path.join(process.cwd(), "avtopost.csv");
 const SENT_FILE = path.join(process.cwd(), "sent.json");
 
 // === вспомогательные ===
