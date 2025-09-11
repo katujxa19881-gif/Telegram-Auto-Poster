@@ -1,8 +1,8 @@
 // scripts/cron_poster.js
 import fs from "fs";
 import path from "path";
-import csvParse from "csv-parse/sync";
 import fetch from "node-fetch";
+import { parse as csvParse } from "csv-parse/sync";
 
 // === настройки окружения ===
 const BOT_TOKEN = process.env.BOT_TOKEN;
