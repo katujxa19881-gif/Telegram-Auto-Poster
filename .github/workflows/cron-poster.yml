@@ -2,76 +2,52 @@ name: Telegram Auto Poster
 
 on:
   schedule:
-    - cron: "*/5 * * * *" # проверяем каждые 5 минут
-  workflow_dispatch: # ручной запуск из Actions
-
-concurrency:
-  group: telegram-auto-poster
-  cancel-in-progress: true
-
-permissions:
-  contents: write # нужно, чтобы пушить sent.json
+    - cron: "*/10 * * * *" # каждые 10 минут проверяем (можно менять)
+  workflow_dispatch: # запуск вручную через GitHub Actions
 
 jobs:
   post:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # нужно, чтобы пушить sent.json обратно
 
-    # === переменные окружения для scripts/cron_poster.js ===
     env:
-      BOT_TOKEN: ${{ secrets.BOT_TOKEN }} # токен бота
-      CHANNEL_ID: ${{ secrets.CHANNEL_ID }} # -100xxxxxxxxxx (ID канала)
-      OWNER_ID: ${{ secrets.OWNER_ID }} # ваш user_id для уведомлений
-
-      TZ: ${{ secrets.TZ }} # напр. Europe/Kaliningrad
-      WINDOW_MIN: ${{ secrets.WINDOW_MIN }} # окно поиска, мин (например 30)
-      LAG_MIN: ${{ secrets.LAG_MIN }} # допустимое «опоздание», мин (например 10)
-      REPORT_HOUR: ${{ secrets.REPORT_HOUR }} # час для вечернего отчёта (21)
-      MAX_PER_RUN: ${{ secrets.MAX_PER_RUN }} # не более N публикаций за один прогон (обычно 1)
-
-      # опционально — ссылка для кнопки «Хочу бота»
-      LINK_ORDER: ${{ secrets.LINK_ORDER }} # например https://t.me/<ваш_юзернейм>
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+      OWNER_ID: ${{ secrets.OWNER_ID }}
+      LINK_ORDER: ${{ secrets.LINK_ORDER }}
+      MAX_PER_RUN: 1 # максимум 1 пост за прогон
+      TZ: Europe/Kaliningrad # твой часовой пояс
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # важно для корректного pull/push
+          fetch-depth: 0
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # наш скрипт использует csv-parse и node-fetch — поставим их на лету
       - name: Install lightweight deps
-        run: npm i csv-parse@^5 --no-audit --no-fund
+        run: npm install csv-parse@5 node-fetch@3
 
-
-      # (необязательно) быстрый вывод времени и TZ для проверки
       - name: Debug time / env
         run: |
-          echo "TZ=$TZ"
-          date
-          node -e "console.log('Node', process.version)"
+          echo "Current UTC time: $(date -u)"
+          echo "Current local time: $(TZ=$TZ date)"
 
       - name: Run cron poster (verbose)
         run: |
           set -e
           node scripts/cron_poster.js
 
-      # Надёжно коммитим sent.json обратно (если менялся)
       - name: Commit & push sent.json (robust)
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-          # Если файла нет — создадим пустой объект
-          [ -f sent.json ] || echo "{}" > sent.json
-          if git diff --quiet -- sent.json; then
-            echo "No changes in sent.json"
-          else
-            git add sent.json
-            git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
-            git pull --rebase origin "$BRANCH" || true
-            git push origin "$BRANCH" || echo "Nothing to push"
-          fi
+          git config --global user.email "actions@github.com"
+          git config --global user.name "github-actions[bot]"
+          git pull --rebase || true
+          git add sent.json
+          git commit -m "chore: update sent.json (auto poster)" || echo "Nothing to commit"
+          git push || echo "Nothing to push"
